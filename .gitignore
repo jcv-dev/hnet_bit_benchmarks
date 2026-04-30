@@ -1,0 +1,13 @@
+**/__pycache__/
+*.py[cod]
+.venv/
+
+# Large external repos (not your code)
+/matmulfreellm/
+/matmulfreellm-master/
+/hnet-main/
+
+# Data and outputs
+/data/
+/runs/
+/test_checkpoints/
