@@ -38,7 +38,7 @@ for _p in [str(_TESIS), str(_MATMULFREE), str(_HNET_BIT)]:
 
 TRANSFORMER_CONFIGS = {
     "tiny": dict(hidden_size=64,  num_hidden_layers=2, num_attention_heads=2,
-                 intermediate_size=128,  max_position_embeddings=256),
+                 intermediate_size=128,  max_position_embeddings=2048),
     "150M": dict(hidden_size=768,  num_hidden_layers=12, num_attention_heads=12,
                  intermediate_size=3072,  max_position_embeddings=2048),
     "350M": dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16,
