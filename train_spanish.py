@@ -332,6 +332,7 @@ class SpanishTrainer:
         with open(self.output_dir / "training_stats.json", "w") as f:
             json.dump(stats, f, indent=2)
         self._save_checkpoint("final")
+        self._cleanup_intermediate_checkpoints()
         self._save_results_csv()
         self._save_train_log_csv()
 
@@ -388,6 +389,22 @@ class SpanishTrainer:
         }
         torch.save(state, path)
         print(f"  Saved checkpoint: {path}")
+
+    def _cleanup_intermediate_checkpoints(self) -> None:
+        """Remove step checkpoints, keeping only final, best, and milestone."""
+        kept = 0
+        removed = 0
+        for ckpt in self.output_dir.glob("checkpoint_*.pt"):
+            name = ckpt.stem  # e.g. checkpoint_step_5000, checkpoint_final
+            if name.startswith("checkpoint_step_"):
+                ckpt.unlink()
+                removed += 1
+            else:
+                kept += 1
+        if removed > 0:
+            print(f"  Cleaned: removed {removed} step checkpoints, kept {kept} ({', '.join(
+                p.stem.replace('checkpoint_', '') for p in self.output_dir.glob('checkpoint_*.pt')
+            )})")
 
     # ------------------------------------------------------------------
     # Results output
