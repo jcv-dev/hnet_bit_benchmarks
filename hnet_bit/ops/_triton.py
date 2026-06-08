@@ -7,6 +7,7 @@
 
 import os
 import logging
+import torch
 
 _TRITON_AVAILABLE = False
 _TRITON_FAILURE_REASON = None
@@ -24,7 +25,6 @@ try:
         tl.store(x_ptr + idx, tl.full([n], 1.0, dtype=tl.float32))
 
     def _probe():
-        import torch
         x = torch.zeros(8, device="cuda", dtype=torch.float32)
         _probe_kernel[(1,)](x, 8)
         return True

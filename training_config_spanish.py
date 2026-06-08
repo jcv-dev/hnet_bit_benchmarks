@@ -266,6 +266,13 @@ def enable_gradient_checkpointing(model: torch.nn.Module) -> None:
     if hasattr(model, "model") and hasattr(model.model, "gradient_checkpointing"):
         model.model.gradient_checkpointing = True
         print("[GradCkpt] Enabled via model.model.gradient_checkpointing = True")
+    elif hasattr(model, "backbone"):
+        # HNetBitForCausalLM: set on the backbone module
+        model.backbone._gradient_checkpointing = True
+        for module in model.backbone.modules():
+            if hasattr(module, "_gradient_checkpointing"):
+                module._gradient_checkpointing = True
+        print("[GradCkpt] Enabled via HNetBit backbone")
     elif hasattr(model, "gradient_checkpointing"):
         model.gradient_checkpointing = True
         print("[GradCkpt] Enabled via model.gradient_checkpointing = True")
