@@ -22,6 +22,16 @@ Configuration:
 
 __version__ = "0.1.0"
 
+from hnet_bit.ops._triton import triton_available, triton_failure_reason
+
+_ok = triton_available()
+_reason = triton_failure_reason()
+if _ok:
+    pass  # Triton is working
+elif _reason:
+    import warnings
+    warnings.warn(f"Triton unavailable: {_reason}")
+
 from hnet_bit.models import HNetBitConfig, HNetBitForCausalLM
 
 __all__ = [

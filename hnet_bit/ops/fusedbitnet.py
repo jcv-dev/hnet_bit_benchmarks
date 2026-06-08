@@ -18,17 +18,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from hnet_bit.ops.bitnet import RMSNorm, BitLinear, activation_quant, weight_quant
+from hnet_bit.ops._triton import triton_available
 from hnet_bit.utils.helpers import contiguous
 
 # Try to import Triton; if unavailable, FusedBitLinear falls back to BitLinear
-_TRITON_AVAILABLE = False
+_TRITON_AVAILABLE = triton_available()
 try:
     import triton
     import triton.language as tl
-    _TRITON_AVAILABLE = True
 except ImportError:
-    pass
-
+    _TRITON_AVAILABLE = False
 
 if _TRITON_AVAILABLE:
 

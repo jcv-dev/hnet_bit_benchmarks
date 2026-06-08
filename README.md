@@ -26,6 +26,10 @@ Architecture D (hybrid_attn) is an ablation variant of the hybrid model that rep
 
 ```bash
 bash scripts/setup_cloud.sh   # Install dependencies (run on cloud GPU)
+
+# If running inside an unprivileged Docker container (Vast.ai Docker templates),
+# Triton kernel compilation may fail. Set this to force CPU fallback:
+export HNETBIT_DISABLE_TRITON=1
 ```
 
 ## Quick start: smoke test

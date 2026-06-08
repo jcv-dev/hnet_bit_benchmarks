@@ -16,10 +16,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from hnet_bit.ops._triton import triton_available
+
+_TRITON_AVAILABLE = triton_available()
 try:
     import triton
     import triton.language as tl
-    _TRITON_AVAILABLE = True
 except ImportError:
     _TRITON_AVAILABLE = False
 

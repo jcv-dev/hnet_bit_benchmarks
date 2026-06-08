@@ -16,6 +16,7 @@ import torch
 import triton
 import triton.language as tl
 
+from hnet_bit.ops._triton import triton_available
 from hnet_bit.utils.helpers import contiguous
 
 
@@ -237,7 +238,7 @@ def fused_recurrent_hgrn(
     Returns:
         Tuple of (output [B, H, T, D], final_state [B, H, D] or None)
     """
-    if not x.is_cuda:
+    if not x.is_cuda or not triton_available():
         return _naive_recurrent_hgrn(x, g, initial_state, output_final_state)
     if initial_state is not None:
         initial_state = initial_state.detach()

@@ -4,11 +4,25 @@ This guide covers deploying the Spanish benchmark on a rented cloud GPU.
 
 ## 1. Rent a cloud GPU
 
+The models use Triton kernels for fast training. Triton's JIT compiler requires the ability to create executable memory pages at runtime, which is blocked in unprivileged Docker containers (the default on Vast.ai Docker templates). Choose a platform that supports this.
+
+**Provider recommendations:**
+
+| Provider | Triton works? | Typical price (A100 80GB) | Notes |
+|---|---|---|---|
+| RunPod (PyTorch template) | Always | ~$1.20/hr | Privileged containers by default |
+| Vast.ai (VM template) | Always | ~$0.60-1.20/hr | Full virtual machine, no restrictions |
+| Vast.ai (Docker template) | Maybe | ~$0.60-1.20/hr | Depends on host. Test before committing. |
+| Lambda Labs | Always | ~$1.10/hr | VM instances, not containers |
+
+**Safe choices:** Rent a **VM template** on Vast.ai (use the search filter "VM") or use **RunPod**. Avoid Vast.ai Docker templates if you want to be certain Triton will work.
+
+**Fallback if forced into Docker:** Set `HNETBIT_DISABLE_TRITON=1` to use naive PyTorch loops instead. Training will be 3-10x slower but will produce identical results. The lazy workaround is to skip the `matmulfree` model (which has its own hardcoded Triton) and train only `hybrid`, `hybrid_attn`, and `transformer`.
+
 **Requirements:**
 - NVIDIA A100 80GB (or H100, A6000)
 - At least 100 GB disk (200 GB recommended for datasets + checkpoints)
 - CUDA 12.4+ pre-installed
-- SSH access
 
 ## 2. Get the code onto the machine
 
@@ -158,6 +172,7 @@ scp user@cloud-ip:~/tesis/results.csv ./
 | Problem | Solution |
 |---|---|
 | `CUDA out of memory` | Reduce batch size: `--batch_size 2` or `--grad_accum 4` |
+| `Triton kernel compilation fails` (Docker) | Set `HNETBIT_DISABLE_TRITON=1` to force CPU fallback. This makes training slower (the model falls back to naive PyTorch loops) but allows the benchmark to run in unprivileged containers. Example: `HNETBIT_DISABLE_TRITON=1 python train_spanish.py --model hybrid --size 150M` |
 | `Triton not available` | Check CUDA version. Triton requires CUDA 11.8+ |
 | `Dataset download fails` | The dataset is from HuggingFace. Ensure internet access and try again |
 | `huggingface_hub.errors.GatedRepoError` | You need to login for the Llama tokenizer: `huggingface-cli login`. Or use the default gpt2 tokenizer |
