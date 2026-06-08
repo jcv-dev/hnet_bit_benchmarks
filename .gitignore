@@ -11,3 +11,7 @@
 *.egg-info/
 build/
 dist/
+
+# Large reference repo assets (not needed for code to run)
+hnet-main/assets/*.gif
+matmulfreellm/__assets__/
