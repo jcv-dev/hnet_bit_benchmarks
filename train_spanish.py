@@ -331,10 +331,6 @@ class SpanishTrainer:
             stats["overall_compression_ratio"] = avg_compression
         with open(self.output_dir / "training_stats.json", "w") as f:
             json.dump(stats, f, indent=2)
-        print(f"  Training time  : {training_elapsed / 3600:.2f} hours ({training_elapsed:.0f} seconds)")
-        print(f"  Peak GPU mem   : {peak_memory_mb:.0f} MB allocated / {peak_reserved_mb:.0f} MB reserved")
-        print(f"  Model params   : {self.param_count:,} ({self.param_count / 1e6:.1f}M)  disk ~{disk_size_mb:.0f} MB")
-
         self._save_checkpoint("final")
         self._save_results_csv()
         self._save_train_log_csv()

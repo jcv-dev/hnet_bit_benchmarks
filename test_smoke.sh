@@ -47,12 +47,12 @@ echo ""
 # ------------------------------------------------------------------
 echo "--- Creating synthetic corpus ---"
 mkdir -p "$DATA_DIR"
-# ~100KB of repeated Spanish text
+# ~500KB of repeated Spanish text (validation set needs >=8192 bytes for 1 sample)
 python3 -c "
 text = 'el gato y el perro caminan por la calle oscura y silenciosa '
 text += 'la casa es grande y tiene muchas ventanas azules '
-text += 'los niños juegan en el parque mientras el sol se pone '
-content = (text * 700)[:100000]
+text += 'los nios juegan en el parque mientras el sol se pone '
+content = (text * 3500)[:500000]
 with open('$DATA_DIR/corpus.bin', 'wb') as f:
     f.write(content.encode('utf-8'))
 print(f'  Wrote {len(content)} bytes -> corpus.bin')
@@ -107,7 +107,7 @@ for MODEL in "${MODELS[@]}"; do
         --lr 1e-3 \
         --no_bf16 \
         --skip_data_build \
-        $EXTRA_ARGS 2>&1 | tail -5
+        $EXTRA_ARGS 2>&1 | tail -10
 
     # Check output files
     RUN_DIR="$SMOKE_DIR/${MODEL}_tiny"

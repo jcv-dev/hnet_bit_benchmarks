@@ -76,15 +76,30 @@ This script:
 
 ## 4. (Optional) Log in to HuggingFace
 
-Required only for the transformer baseline (which uses the gpt2 tokenizer by default, so this is optional):
+Required only for the transformer baseline (which uses the gpt2 tokenizer by default, so this is optional).
 
+The `huggingface-cli` shell command may not be available on some templates. Use one of these methods instead:
+
+**Method A: Python login (interactive)**
 ```bash
-huggingface-cli login
+python3 -c "from huggingface_hub import login; login()"
+```
+You will be prompted for a token. Paste from https://huggingface.co/settings/tokens.
+
+**Method B: Write token file directly (non-interactive)**
+```bash
+mkdir -p ~/.cache/huggingface
+echo -n 'YOUR_TOKEN' > ~/.cache/huggingface/token
 ```
 
-If you want to use the Llama tokenizer instead of gpt2:
+**Method C: If you want to use the Llama tokenizer instead of gpt2:**
 ```bash
-huggingface-cli login --token YOUR_HF_TOKEN
+python3 -c "from huggingface_hub import login; login(token='YOUR_HF_TOKEN')"
+```
+
+Verify the login worked:
+```bash
+python3 -c "from huggingface_hub import whoami; print(whoami()['name'])"
 ```
 
 ## 5. Run the smoke test
@@ -202,6 +217,6 @@ scp user@cloud-ip:~/tesis/results.csv ./
 | `Triton kernel compilation fails` (Docker) | Set `HNETBIT_DISABLE_TRITON=1` to force CPU fallback. This makes training slower (the model falls back to naive PyTorch loops) but allows the benchmark to run in unprivileged containers. Example: `HNETBIT_DISABLE_TRITON=1 python train_spanish.py --model hybrid --size 150M` |
 | `Triton not available` | Check CUDA version. Triton requires CUDA 11.8+ |
 | `Dataset download fails` | The dataset is from HuggingFace. Ensure internet access and try again |
-| `huggingface_hub.errors.GatedRepoError` | You need to login for the Llama tokenizer: `huggingface-cli login`. Or use the default gpt2 tokenizer |
+| `huggingface_hub.errors.GatedRepoError` | You need a HuggingFace token. Run `python3 -c "from huggingface_hub import login; login()"` or create `~/.cache/huggingface/token` manually with your token from https://huggingface.co/settings/tokens |
 | `Training is slow` | Ensure `--no_bf16` is NOT set. BF16 is enabled by default and doubles throughput on A100 |
 | `SSH disconnects during training` | Use `tmux` (recommended): start training inside `tmux new -s run_name`, then detach with Ctrl+B then D. Reconnect with `tmux attach -t run_name`. Alternatively use `nohup python ... > log.txt 2>&1 &` but you cannot reattach to see live output. |
