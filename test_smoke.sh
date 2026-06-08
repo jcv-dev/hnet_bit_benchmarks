@@ -22,11 +22,18 @@ done
 MODELS=("hybrid")
 if $GPU_MODE; then
     MODELS+=("matmulfree" "hybrid_attn")
-    # transformer requires HuggingFace login for Llama tokenizer
-    if huggingface-cli whoami &>/dev/null 2>&1; then
+    # transformer requires HuggingFace login for gpt2 tokenizer
+    HF_OK=false
+    if command -v huggingface-cli &>/dev/null && huggingface-cli whoami &>/dev/null 2>&1; then
+        HF_OK=true
+    elif [ -f ~/.cache/huggingface/token ] && python3 -c "from huggingface_hub import whoami; whoami()" &>/dev/null 2>&1; then
+        HF_OK=true
+    fi
+    if $HF_OK; then
         MODELS+=("transformer")
     else
-        echo "  [--gpu] Skipping transformer: not logged into HuggingFace (run 'huggingface-cli login')"
+        echo "  [--gpu] Skipping transformer: not logged into HuggingFace"
+        echo "    Login with:  python3 -c \"from huggingface_hub import login; login()\""
     fi
 fi
 

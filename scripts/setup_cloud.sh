@@ -91,6 +91,15 @@ echo ""
 echo "Installing dev tools..."
 $PKG_MANAGER install tensorboard matplotlib pandas pytest tqdm
 
+# Verify huggingface-cli is available (installed by huggingface_hub)
+echo ""
+echo "Checking CLI tools..."
+if command -v huggingface-cli &>/dev/null; then
+    echo "  huggingface-cli: OK"
+else
+    echo "  WARNING: huggingface-cli not found. Run: source /venv/main/bin/activate"
+fi
+
 # Verification
 echo ""
 echo "=== Verification ==="
@@ -121,7 +130,12 @@ echo ""
 echo "  3. Run benchmark:"
 echo "     python train_spanish.py --model hybrid --size 150M"
 echo ""
-echo "  Detached (recommended for long runs):"
+echo "  Using tmux (recommended — survives SSH disconnect):"
+echo "     tmux new -s hybrid_150M"
+echo "     # Inside session: cd ~/tesis && source /venv/main/bin/activate"
+echo "     python train_spanish.py --model hybrid --size 150M"
+echo "     # Detach: Ctrl+B then D. Reattach: tmux attach -t hybrid_150M"
+echo ""
+echo "  Using nohup (alternative):"
 echo "     nohup python train_spanish.py --model hybrid --size 150M > hybrid_150M.log 2>&1 &"
-echo "  Then monitor with:"
 echo "     tail -f hybrid_150M.log"

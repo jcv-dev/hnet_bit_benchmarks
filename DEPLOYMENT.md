@@ -119,29 +119,56 @@ This downloads ~1.5 GB of text from HuggingFace and tokenizes it. The data cache
 
 ## 7. Run the benchmark
 
-### Individual runs
+Each training run takes 20-200 hours. Use `tmux` to keep runs alive across SSH disconnects.
+
+### Using tmux (recommended over nohup)
 
 ```bash
-# Lightweight baseline (starts producing results quickly):
-nohup python train_spanish.py --model matmulfree --size 150M > matmulfree_150M.log 2>&1 &
-nohup python train_spanish.py --model hybrid --size 150M > hybrid_150M.log 2>&1 &
-nohup python train_spanish.py --model transformer --size 150M > transformer_150M.log 2>&1 &
+# Start a named session for each model:
+tmux new -s hybrid_150M
 
-# Ablation:
-nohup python train_spanish.py --model hybrid_attn --size 150M > hybrid_attn_150M.log 2>&1 &
+# Inside the tmux session, start training:
+cd ~/tesis
+source /venv/main/bin/activate
+python train_spanish.py --model hybrid --size 150M
+
+# Detach: Ctrl+B, then D
+# Reconnect later: tmux attach -t hybrid_150M
+
+# Start multiple runs in parallel (one session per model):
+tmux new -s matmulfree_150M -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree --size 150M'
+tmux new -s hybrid_150M -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid --size 150M'
+tmux new -s transformer_150M -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer --size 150M'
+```
+
+If `tmux` is not installed:
+```bash
+sudo apt update && sudo apt install -y tmux
+```
+
+### Without tmux (using nohup)
+
+```bash
+nohup python train_spanish.py --model hybrid --size 150M > hybrid_150M.log 2>&1 &
+
+# Monitor output:
+tail -f hybrid_150M.log
 ```
 
 ### Monitor progress
 
 ```bash
-# Check loss every 10 steps (log output):
-tail -f matmulfree_150M.log
+# List running tmux sessions:
+tmux ls
+
+# Attach to a running session to see live output:
+tmux attach -t hybrid_150M
+
+# List all running processes:
+ps aux | grep train_spanish
 
 # TensorBoard:
 tensorboard --logdir runs/spanish --bind_all
-
-# Check what's running:
-jobs -l
 ```
 
 ## 8. Retrieve results
@@ -177,4 +204,4 @@ scp user@cloud-ip:~/tesis/results.csv ./
 | `Dataset download fails` | The dataset is from HuggingFace. Ensure internet access and try again |
 | `huggingface_hub.errors.GatedRepoError` | You need to login for the Llama tokenizer: `huggingface-cli login`. Or use the default gpt2 tokenizer |
 | `Training is slow` | Ensure `--no_bf16` is NOT set. BF16 is enabled by default and doubles throughput on A100 |
-| `SSH disconnects during training` | Use `nohup` or `tmux` / `screen` to keep the process alive |
+| `SSH disconnects during training` | Use `tmux` (recommended): start training inside `tmux new -s run_name`, then detach with Ctrl+B then D. Reconnect with `tmux attach -t run_name`. Alternatively use `nohup python ... > log.txt 2>&1 &` but you cannot reattach to see live output. |
