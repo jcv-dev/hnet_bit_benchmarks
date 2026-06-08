@@ -456,11 +456,12 @@ def generate_final_results(
     """
     print(f"\n--- Final Evaluation: {config.model_name} {config.model_size} ---")
 
-    # BPB
+    # BPB (cap at 200 batches for speed; 200 x 8192 = 1.6M bytes, sufficient for stable metric)
     bpb_results = compute_bpb(
         model, val_loader, is_byte_level,
         avg_bytes_per_token=avg_bytes_per_token,
         device=device,
+        max_batches=200,
     )
 
     # Inference memory
