@@ -1,0 +1,20 @@
+{
+    "output_dir": "runs/small_test",
+    "data_path": null,
+    "max_steps": 100,
+    "batch_size": 4,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 1e-3,
+    "weight_decay": 0.01,
+    "warmup_steps": 10,
+    "lr_scheduler": "cosine",
+    "max_seq_length": 128,
+    "max_grad_norm": 1.0,
+    "eval_interval": 50,
+    "save_interval": 50,
+    "log_interval": 10,
+    "seed": 42,
+    "fp16": false,
+    "bf16": false,
+    "resume_from": null
+}

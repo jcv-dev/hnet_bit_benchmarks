@@ -86,8 +86,8 @@ class SpanishTrainingConfig:
     byte_seq_length: int = 8192
     token_seq_length: int = 1792    # approx 8192 bytes / 4.57 bytes‑per‑token
 
-    # Training schedule
-    total_tokens: int = 100_000_000_000   # 100B
+    # Training schedule (total_training_bytes = bytes of underlying text, same for all models)
+    total_training_bytes: int = 100_000_000_000   # 100B
     batch_size: int = 4
     gradient_accumulation_steps: int = 8
 
@@ -117,7 +117,7 @@ class SpanishTrainingConfig:
     save_interval_steps: int = 5000
     log_interval_steps: int = 10
 
-    # Checkpointing milestones (in tokens) for final metrics
+    # Checkpointing milestones (in bytes of training text) for final metrics
     checkpoint_milestones: List[int] = field(
         default_factory=lambda: [25_000_000_000, 50_000_000_000, 100_000_000_000]
     )
@@ -127,6 +127,12 @@ class SpanishTrainingConfig:
 
     # Reproducibility
     seed: int = 42
+
+    # Override for debugging (set via CLI --max_steps)
+    max_steps_override: Optional[int] = None
+
+    # Average bytes per BPE token (used for fair text budget across model types)
+    avg_bytes_per_token: float = 1.0
 
     # Hierarchical model specific
     lr_multipliers: Optional[List[float]] = None
@@ -142,14 +148,15 @@ class SpanishTrainingConfig:
         return self.batch_size * self.gradient_accumulation_steps
 
     @property
-    def tokens_per_step(self) -> int:
-        """Tokens consumed per optimizer step."""
-        seq_len = self.token_seq_length if self.model_name == "transformer" else self.byte_seq_length
-        return self.effective_batch_size * seq_len
+    def bytes_per_step(self) -> int:
+        """Bytes of underlying text consumed per optimizer step (same unit for all model types)."""
+        if self.model_name == "transformer":
+            return int(self.effective_batch_size * self.token_seq_length * self.avg_bytes_per_token)
+        return self.effective_batch_size * self.byte_seq_length
 
     @property
     def total_steps(self) -> int:
-        return self.total_tokens // self.tokens_per_step
+        return self.total_training_bytes // self.bytes_per_step
 
     @property
     def warmup_steps(self) -> int:

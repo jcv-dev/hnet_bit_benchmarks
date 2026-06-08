@@ -32,54 +32,128 @@ from data_spanish import create_dataloaders
 from metrics_spanish import compute_bpb, measure_inference_memory
 
 
+def _safe_float(val, default=""):
+    try:
+        return round(float(val), 4)
+    except (ValueError, TypeError):
+        return default
+
+
 def collect_existing_results(runs_dir: str) -> list[dict]:
     """
-    Scan *runs_dir* for per-run result files and merge them.
-
-    Collects:
-    - BPB and Inference_Memory_MB from ``results_*.csv``
-    - Peak Tokens/sec and Best Train Loss from ``training_steps_log.csv``
-    - Best BPB from ``validation_log.csv``
+    Scan *runs_dir* for per-run result files and merge ALL available info
+    into one row per model x size.
     """
     runs = Path(runs_dir)
     all_results = []
 
     for csv_file in sorted(runs.rglob("results_*.csv")):
+        run_dir = csv_file.parent
+        # Derive model-specific run subdirectory from CSV filename (e.g. hybrid_tiny)
+        parts = csv_file.stem.replace("results_", "", 1).rsplit("_", 1)
+        model_run_subdir = "_".join(parts) if len(parts) == 2 else None
+        model_run_dir = (run_dir / model_run_subdir) if model_run_subdir else run_dir
+        if not model_run_dir.exists():
+            model_run_dir = run_dir  # fallback to parent
+
         with open(csv_file) as f:
             reader = csv.DictReader(f)
-            for row in reader:
-                row["BPB"] = float(row["BPB"])
-                row["Inference_Memory_MB"] = float(row["Inference_Memory_MB"])
+            for base_row in reader:
+                row = dict(base_row)
+                row["BPB_Final"] = _safe_float(row.pop("BPB", ""))
+                row["Inference_Memory_MB"] = _safe_float(row.get("Inference_Memory_MB", ""))
 
-                # Try to enrich with throughput from training_steps_log.csv
-                steps_log = csv_file.parent / "training_steps_log.csv"
-                row["Peak_Tok_Per_Sec"] = ""
-                row["Best_Train_Loss"] = ""
+                # ── training_steps_log.csv ──────────────────────────────
+                row.update({
+                    "Train_Steps": "", "Best_Train_Loss": "",
+                    "Final_Train_Loss": "", "Peak_Tok_Per_Sec": "",
+                    "Avg_Tok_Per_Sec": "",
+                })
+                steps_log = model_run_dir / "training_steps_log.csv"
                 if steps_log.exists():
                     try:
                         with open(steps_log) as sf:
                             steps = list(csv.DictReader(sf))
                         if steps:
-                            row["Peak_Tok_Per_Sec"] = round(
-                                max(float(s["tok_per_sec"]) for s in steps), 1
-                            )
-                            row["Best_Train_Loss"] = round(
-                                min(float(s["loss"]) for s in steps), 4
-                            )
+                            losses = [float(s["loss"]) for s in steps]
+                            toks = [float(s["tok_per_sec"]) for s in steps]
+                            row["Train_Steps"] = steps[-1]["step"]
+                            row["Best_Train_Loss"] = round(min(losses), 4)
+                            row["Final_Train_Loss"] = round(losses[-1], 4)
+                            row["Peak_Tok_Per_Sec"] = round(max(toks), 1)
+                            row["Avg_Tok_Per_Sec"] = round(sum(toks) / len(toks), 1)
                     except Exception:
                         pass
 
-                # Try to enrich with best BPB from validation_log.csv
-                val_log = csv_file.parent / "validation_log.csv"
-                row["Best_Val_BPB"] = row["BPB"]  # fallback to final
+                # ── validation_log.csv ──────────────────────────────────
+                row.update({
+                    "Best_Val_BPB": row["BPB_Final"],
+                    "Final_Val_BPB": row["BPB_Final"],
+                    "Best_Val_Loss": "", "Final_Val_Loss": "",
+                    "Val_BPB_at_25B": "", "Val_BPB_at_50B": "",
+                    "Val_BPB_at_100B": "",
+                })
+                val_log = model_run_dir / "validation_log.csv"
                 if val_log.exists():
                     try:
                         with open(val_log) as vf:
                             evals = list(csv.DictReader(vf))
                         if evals:
-                            row["Best_Val_BPB"] = round(
-                                min(float(e["val_bpb"]) for e in evals), 4
-                            )
+                            bpbs = [float(e["val_bpb"]) for e in evals]
+                            losses = [float(e["val_loss"]) for e in evals]
+                            bytes_seen = [int(e.get("bytes_seen", e.get("tokens_seen", 0))) for e in evals]
+                            row["Best_Val_BPB"] = round(min(bpbs), 4)
+                            row["Final_Val_BPB"] = round(bpbs[-1], 4)
+                            row["Best_Val_Loss"] = round(min(losses), 4)
+                            row["Final_Val_Loss"] = round(losses[-1], 4)
+                            for label, target in [
+                                ("Val_BPB_at_25B",  25_000_000_000),
+                                ("Val_BPB_at_50B",  50_000_000_000),
+                                ("Val_BPB_at_100B", 100_000_000_000),
+                            ]:
+                                dists = [abs(t - target) for t in bytes_seen]
+                                idx = dists.index(min(dists))
+                                if min(dists) < 5_000_000_000:
+                                    row[label] = round(bpbs[idx], 4)
+                    except Exception:
+                        pass
+
+                # ── config.json ─────────────────────────────────────────
+                row.update({
+                    "LR": "", "Batch_Size": "", "Grad_Accum": "",
+                    "Total_Bytes": "", "Seq_Length": "",
+                })
+                config_file = model_run_dir / "config.json"
+                if config_file.exists():
+                    try:
+                        with open(config_file) as cf:
+                            cfg = json.load(cf)
+                        row["LR"] = cfg.get("learning_rate", "")
+                        row["Batch_Size"] = cfg.get("batch_size", "")
+                        row["Grad_Accum"] = cfg.get("gradient_accumulation_steps", "")
+                        row["Total_Bytes"] = cfg.get("total_training_bytes", "")
+                        seq = (cfg.get("token_seq_length")
+                               if cfg.get("model_name") == "transformer"
+                               else cfg.get("byte_seq_length"))
+                        row["Seq_Length"] = seq or ""
+                    except Exception:
+                        pass
+
+                # ── training_stats.json ──────────────────────────────────
+                stats_file = model_run_dir / "training_stats.json"
+                if stats_file.exists():
+                    try:
+                        with open(stats_file) as sf:
+                            stats = json.load(sf)
+                        row["Training_Time_Hours"] = round(stats.get("training_time_hours", 0), 2)
+                        row["Training_Time_Seconds"] = round(stats.get("training_time_seconds", 0), 0)
+                        row["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
+                        row["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
+                        row["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
+                        row["Peak_Reserved_Memory_MB"] = round(stats.get("peak_reserved_memory_mb", 0), 0)
+                        compression = stats.get("overall_compression_ratio")
+                        if compression is not None:
+                            row["Overall_Compression_Ratio"] = round(compression, 4)
                     except Exception:
                         pass
 
@@ -164,6 +238,23 @@ def reevaluate_checkpoints(
             "Peak_Tok_Per_Sec": "",
             "Best_Train_Loss": "",
         }
+
+        # Read training stats
+        stats_file = ckpt_path.parent / "training_stats.json"
+        if stats_file.exists():
+            try:
+                with open(stats_file) as sf:
+                    stats = json.load(sf)
+                result["Training_Time_Hours"] = round(stats.get("training_time_hours", 0), 2)
+                result["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
+                result["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
+                result["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
+                compression = stats.get("overall_compression_ratio")
+                if compression is not None:
+                    result["Overall_Compression_Ratio"] = round(compression, 4)
+            except Exception:
+                pass
+
         all_results.append(result)
 
         print(f"  BPB              : {result['BPB']:.4f}")
@@ -182,32 +273,56 @@ def save_results(results: list[dict], output_path: str) -> None:
         print("No results to save.")
         return
 
-    keys = ["Model", "Size", "BPB", "Best_Val_BPB", "Inference_Memory_MB",
-            "Peak_Tok_Per_Sec", "Best_Train_Loss"]
-    # Only include keys that exist in results
-    present_keys = [k for k in keys if any(k in r for r in results)]
+    # Ordered columns — all possible fields
+    all_keys = [
+        "Model", "Size",
+        # Core metrics
+        "BPB_Final", "Best_Val_BPB", "Final_Val_BPB",
+        "Best_Val_Loss", "Final_Val_Loss",
+        "Val_BPB_at_25B", "Val_BPB_at_50B", "Val_BPB_at_100B",
+        "Inference_Memory_MB",
+        # Model stats
+        "Param_Count_M", "Disk_Size_MB",
+        "Peak_Training_Memory_MB", "Peak_Reserved_Memory_MB",
+        "Overall_Compression_Ratio",
+        # Training stats
+        "Best_Train_Loss", "Final_Train_Loss", "Train_Steps",
+        "Peak_Tok_Per_Sec", "Avg_Tok_Per_Sec",
+        "Training_Time_Hours",
+        # Hyperparameters
+        "LR", "Batch_Size", "Grad_Accum", "Total_Bytes", "Seq_Length",
+    ]
+    # Only write columns that have at least one non-empty value
+    present_keys = [
+        k for k in all_keys
+        if any(str(r.get(k, "")) not in ("", "None") for r in results)
+    ]
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=present_keys, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(results)
 
-    # Print table
-    print(f"\n{'='*80}")
-    print(f"{'Model':<15} {'Size':<8} {'BPB':<10} {'Best BPB':<10} "
-          f"{'Memory (MB)':<14} {'Tok/s':<12} {'Best Loss':<10}")
-    print(f"{'-'*80}")
+    # Print concise summary table
+    print(f"\n{'='*160}")
+    print(f"{'Model':<15} {'Size':<8} {'Params M':<9} {'BPB':<8} {'Loss':<8} "
+          f"{'Train Mem':<10} {'Disk MB':<8} {'Compress':<9} {'Tok/s':<8} {'Hours':<8}")
+    print(f"{'-'*160}")
     for r in results:
         print(
-            f"{r.get('Model',''):<15} {r.get('Size',''):<8} "
-            f"{float(r.get('BPB', 0)):<10.4f} "
-            f"{float(r.get('Best_Val_BPB', r.get('BPB', 0))):<10.4f} "
-            f"{float(r.get('Inference_Memory_MB', 0)):<14.1f} "
-            f"{str(r.get('Peak_Tok_Per_Sec','')):<12} "
-            f"{str(r.get('Best_Train_Loss','')):<10}"
+            f"{str(r.get('Model','')):<15} {str(r.get('Size','')):<8} "
+            f"{str(r.get('Param_Count_M', '')):<9} "
+            f"{str(r.get('Best_Val_BPB', r.get('BPB_Final', ''))):<8} "
+            f"{str(r.get('Best_Val_Loss', '')):<8} "
+            f"{str(r.get('Peak_Training_Memory_MB','')):<10} "
+            f"{str(r.get('Disk_Size_MB','')):<8} "
+            f"{str(r.get('Overall_Compression_Ratio','')):<9} "
+            f"{str(r.get('Peak_Tok_Per_Sec','')):<8} "
+            f"{str(r.get('Training_Time_Hours','')):<8}"
         )
-    print(f"{'='*80}")
-    print(f"\nSaved to: {output_path}")
+    print(f"{'='*160}")
+    print(f"\nFull results saved to: {output_path}")
+    print(f"Columns: {', '.join(present_keys)}")
 
 
 def main():

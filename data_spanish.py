@@ -43,7 +43,7 @@ class SpanishCorpusBuilder:
         self,
         cache_dir: str = "./data/spanish",
         hf_dataset: str = "jhonparra18/spanish_billion_words_clean",
-        tokenizer_name: str = "meta-llama/Llama-3.2-1B",
+        tokenizer_name: str = "gpt2",
         max_samples: Optional[int] = None,
     ):
         self.cache_dir = Path(cache_dir)

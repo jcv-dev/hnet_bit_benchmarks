@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hnet-bit"
+version = "0.1.0"
+description = "Hierarchical Network with Ternary Weights (HNet-Bit)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "moravak"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "triton>=3.5.0",
+    "einops>=0.6.0",
+    "numpy>=2",
+    "datasets",
+    "wandb",
+    "tensorboard",
+    "matplotlib",
+    "seaborn"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+hnet-bit-generate = "generate:main"
+
+[tool.setuptools]
+packages = [
+    "hnet_bit",
+    "hnet_bit.models",
+    "hnet_bit.layers",
+    "hnet_bit.ops",
+    "hnet_bit.ops.hgrn",
+    "hnet_bit.training",
+    "hnet_bit.utils",
+    "hnet_bit.scripts",
+    "hnet_bit.configs",
+    "hnet_bit.tests",
+]
+package-dir = {"hnet_bit" = "."}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

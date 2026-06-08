@@ -98,6 +98,18 @@ class SpanishTrainer:
         self.global_step = 0
         self.tokens_seen = 0
         self.best_val_bpb = float("inf")
+        self.training_start_time = None
+
+        # Parameter count
+        self.param_count = sum(p.numel() for p in self.model.parameters())
+        self.trainable_param_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+        # Reset CUDA peak memory stats to measure training peak later
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+        # Chunking stats accumulator (hybrid only)
+        self._chunking_accum: list[dict] = []
 
         # Results log
         self.results_log: list[dict] = []
@@ -151,7 +163,7 @@ class SpanishTrainer:
         """Run the full training loop."""
         self.model.train()
         cfg = self.config
-        max_steps = cfg.total_steps if not hasattr(cfg, "_max_steps_override") else cfg._max_steps_override
+        max_steps = cfg.max_steps_override if cfg.max_steps_override is not None else cfg.total_steps
 
         # Save config
         with open(self.output_dir / "config.json", "w") as f:
@@ -161,8 +173,8 @@ class SpanishTrainer:
         print(f"\n{'='*60}")
         print(f"Training {cfg.model_name} {cfg.model_size}")
         print(f"  Max steps      : {max_steps:,}")
-        print(f"  Tokens/step    : {cfg.tokens_per_step:,}")
-        print(f"  Total tokens   : {cfg.total_tokens:,}")
+        print(f"  Bytes/step     : {cfg.bytes_per_step:,}")
+        print(f"  Total bytes    : {cfg.total_training_bytes:,}")
         print(f"  Batch size     : {cfg.batch_size} × {cfg.gradient_accumulation_steps} = {cfg.effective_batch_size}")
         print(f"  LR             : {cfg.resolve_learning_rate():.2e}")
         print(f"  Output         : {self.output_dir}")
@@ -172,6 +184,7 @@ class SpanishTrainer:
         micro_step = 0
         data_iter = iter(self.train_loader)
         t_start = time.time()
+        self.training_start_time = t_start
 
         while self.global_step < max_steps:
             # Get batch (cycle)
@@ -189,14 +202,20 @@ class SpanishTrainer:
                     input_ids=batch["input_ids"],
                     labels=batch["labels"],
                     attention_mask=batch.get("attention_mask"),
-                    output_hidden_states=True if cfg.model_name == "hybrid" else False,
+                    output_hidden_states=True if cfg.model_name in ("hybrid", "hybrid_attn") else False,
                 )
                 
                 ce_loss = outputs.loss
                 
-                if cfg.model_name == "hybrid" and getattr(outputs, "router_outputs", None):
-                    lb_loss = self.compute_load_balancing_loss(outputs.router_outputs)
+                if cfg.model_name in ("hybrid", "hybrid_attn") and (router_outputs := getattr(outputs, "router_outputs", None)):
+                    lb_loss = self.compute_load_balancing_loss(router_outputs)
                     total_loss = ce_loss + cfg.lambda_lb * lb_loss
+                    # Accumulate chunking stats
+                    chunk_entry = {}
+                    for s, r in enumerate(router_outputs):
+                        if r is not None and r.boundary_mask is not None:
+                            chunk_entry[f"stage_{s}_compression_ratio"] = r.boundary_mask.float().mean().item()
+                    self._chunking_accum.append(chunk_entry)
                 else:
                     total_loss = ce_loss
 
@@ -219,7 +238,7 @@ class SpanishTrainer:
                 self.scheduler.step()
 
                 self.global_step += 1
-                self.tokens_seen += cfg.tokens_per_step
+                self.tokens_seen += cfg.bytes_per_step
 
                 # Log
                 if self.global_step % cfg.log_interval_steps == 0:
@@ -229,12 +248,29 @@ class SpanishTrainer:
                     
                     train_entry = {
                         "step": self.global_step,
-                        "tokens_seen": self.tokens_seen,
+                        "bytes_seen": self.tokens_seen,
                         "loss": accum_loss,
                         "lr": lr,
                         "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
                         "tok_per_sec": tok_per_sec
                     }
+                    # Average and log chunking stats for hybrid
+                    if self._chunking_accum:
+                        ratios = []
+                        merged = {}
+                        for e in self._chunking_accum:
+                            for k, v in e.items():
+                                merged.setdefault(k, []).append(v)
+                        for k, vals in merged.items():
+                            avg = sum(vals) / len(vals)
+                            train_entry[k] = avg
+                            ratios.append(avg)
+                        if ratios:
+                            overall = 1.0
+                            for r in ratios:
+                                overall *= r
+                            train_entry["overall_compression_ratio"] = overall
+                        self._chunking_accum = []
                     self.train_log.append(train_entry)
                     
                     # Save train log periodically
@@ -243,7 +279,7 @@ class SpanishTrainer:
 
                     print(f"step={self.global_step:>8,}  loss={accum_loss:.4f}  "
                           f"lr={lr:.2e}  grad_norm={grad_norm:.3f}  "
-                          f"tokens={self.tokens_seen:>14,}  tok/s={tok_per_sec:,.0f}")
+                          f"bytes={self.tokens_seen:>14,}  tok/s={tok_per_sec:,.0f}")
 
                 accum_loss = 0.0
 
@@ -261,13 +297,44 @@ class SpanishTrainer:
                     if self.tokens_seen >= milestone:
                         self._passed_milestones.add(milestone)
                         ms_label = f"{milestone // 1_000_000_000}B"
-                        print(f"\n*** Milestone: {ms_label} tokens reached ***")
+                        print(f"\n*** Milestone: {ms_label} bytes reached ***")
                         self._evaluate_and_log()
                         self._save_checkpoint(f"milestone_{ms_label}")
                         self.model.train()
 
         # Final evaluation & save
         self._evaluate_and_log()
+
+        # Training time & hardware stats
+        training_elapsed = time.time() - self.training_start_time
+        peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 ** 2) if torch.cuda.is_available() else 0.0
+        peak_reserved_mb = torch.cuda.max_memory_reserved() / (1024 ** 2) if torch.cuda.is_available() else 0.0
+        disk_size_mb = sum(p.numel() for p in self.model.parameters()) * 2 / (1024 ** 2)  # bf16
+
+        # Average compression ratio from training log (hybrid only)
+        ratios = [e.get("overall_compression_ratio")
+                  for e in self.train_log if "overall_compression_ratio" in e]
+        avg_compression = sum(ratios) / len(ratios) if ratios else None
+
+        stats = {
+            "training_time_seconds": training_elapsed,
+            "training_time_hours": training_elapsed / 3600,
+            "total_steps": self.global_step,
+            "bytes_seen": self.tokens_seen,
+            "param_count": self.param_count,
+            "trainable_param_count": self.trainable_param_count,
+            "disk_size_mb": round(disk_size_mb, 1),
+            "peak_training_memory_mb": round(peak_memory_mb, 0),
+            "peak_reserved_memory_mb": round(peak_reserved_mb, 0),
+        }
+        if avg_compression is not None:
+            stats["overall_compression_ratio"] = avg_compression
+        with open(self.output_dir / "training_stats.json", "w") as f:
+            json.dump(stats, f, indent=2)
+        print(f"  Training time  : {training_elapsed / 3600:.2f} hours ({training_elapsed:.0f} seconds)")
+        print(f"  Peak GPU mem   : {peak_memory_mb:.0f} MB allocated / {peak_reserved_mb:.0f} MB reserved")
+        print(f"  Model params   : {self.param_count:,} ({self.param_count / 1e6:.1f}M)  disk ~{disk_size_mb:.0f} MB")
+
         self._save_checkpoint("final")
         self._save_results_csv()
         self._save_train_log_csv()
@@ -297,7 +364,7 @@ class SpanishTrainer:
 
         entry = {
             "step": self.global_step,
-            "tokens_seen": self.tokens_seen,
+            "bytes_seen": self.tokens_seen,
             "val_loss": val_loss,
             "val_bpb": bpb,
         }
@@ -366,12 +433,13 @@ def generate_final_results(
     vocab_size: int,
     avg_bytes_per_token: float,
     device: str = "cuda",
+    output_dir: str = None,
 ) -> dict:
     """
     Generate the final results dict for one model × size combination.
 
     Returns a dict with:
-        Model, Size, BPB, Inference_Memory_MB
+        Model, Size, BPB, Inference_Memory_MB, Training_Time_Hours
     """
     print(f"\n--- Final Evaluation: {config.model_name} {config.model_size} ---")
 
@@ -391,15 +459,49 @@ def generate_final_results(
         device=device,
     )
 
+    val_loss = bpb_results["loss"]
+    val_perplexity = math.exp(min(val_loss, 20))
+
     result = {
         "Model": config.model_name,
         "Size": config.model_size,
         "BPB": round(bpb_results["bpb"], 4),
+        "Val_Loss": round(val_loss, 4),
+        "Val_Perplexity": round(val_perplexity, 2),
         "Inference_Memory_MB": round(mem_results["peak_memory_mb"], 1),
     }
 
+    # Read training-time stats from training_stats.json if available
+    if output_dir is not None:
+        stats_path = Path(output_dir) / "training_stats.json"
+        if stats_path.exists():
+            with open(stats_path) as f:
+                stats = json.load(f)
+            result["Training_Time_Hours"] = round(stats.get("training_time_hours", 0), 2)
+            result["Training_Time_Seconds"] = round(stats.get("training_time_seconds", 0), 0)
+            result["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
+            result["Param_Count"] = stats.get("param_count", 0)
+            result["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
+            result["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
+            result["Peak_Reserved_Memory_MB"] = round(stats.get("peak_reserved_memory_mb", 0), 0)
+            compression = stats.get("overall_compression_ratio")
+            if compression is not None:
+                result["Overall_Compression_Ratio"] = round(compression, 4)
+        else:
+            result["Training_Time_Hours"] = ""
+            # Compute param count from model directly if no stats file
+            p = sum(p.numel() for p in model.parameters())
+            result["Param_Count_M"] = round(p / 1_000_000, 1)
+
     print(f"  BPB               : {result['BPB']:.4f}")
+    print(f"  Val Loss          : {result['Val_Loss']:.4f}")
+    print(f"  Perplexity        : {result['Val_Perplexity']:.2f}")
+    print(f"  Params            : {result.get('Param_Count_M', '?')}M")
+    if "Peak_Training_Memory_MB" in result and result["Peak_Training_Memory_MB"]:
+        print(f"  Peak Train Mem   : {result['Peak_Training_Memory_MB']:.0f} MB")
     print(f"  Inference Memory  : {result['Inference_Memory_MB']:.1f} MB")
+    if result.get("Training_Time_Hours"):
+        print(f"  Training Time     : {result['Training_Time_Hours']:.2f} hours")
 
     return result
 
@@ -408,9 +510,9 @@ def save_results_csv(results: list[dict], output_path: str) -> None:
     """Write the final results table to CSV."""
     if not results:
         return
-    keys = ["Model", "Size", "BPB", "Inference_Memory_MB"]
+    keys = results[0].keys()
     with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+        writer = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(results)
     print(f"\nResults saved to {output_path}")
@@ -425,10 +527,10 @@ def parse_args() -> argparse.Namespace:
         description="Train and benchmark language models on Spanish Billion Words"
     )
     parser.add_argument("--model", type=str, required=True,
-                        choices=["transformer", "matmulfree", "hybrid"],
+                        choices=["transformer", "matmulfree", "hybrid", "hybrid_attn"],
                         help="Model architecture")
     parser.add_argument("--size", type=str, required=True,
-                        choices=["150M", "350M", "750M"],
+                        choices=["tiny", "150M", "350M", "750M"],
                         help="Model size tier")
 
     # Overrides
@@ -455,6 +557,10 @@ def parse_args() -> argparse.Namespace:
                         help="Limit number of HF dataset samples (for debugging)")
     parser.add_argument("--skip_data_build", action="store_true",
                         help="Skip data downloading/preprocessing")
+
+    # Tokenizer (overrides default for transformer)
+    parser.add_argument("--tokenizer_name", type=str, default=None,
+                        help="Tokenizer name for transformer model (default: gpt2)")
 
     # Eval only
     parser.add_argument("--eval_only", action="store_true",
@@ -490,7 +596,7 @@ def main():
     if args.grad_accum is not None:
         config.gradient_accumulation_steps = args.grad_accum
     if args.total_tokens is not None:
-        config.total_tokens = args.total_tokens
+        config.total_training_bytes = args.total_tokens
     if args.no_bf16:
         config.bf16 = False
     if args.fp16:
@@ -499,7 +605,7 @@ def main():
 
     # Handle --max_steps override (for debugging)
     if args.max_steps is not None:
-        config._max_steps_override = args.max_steps
+        config.max_steps_override = args.max_steps
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
@@ -519,7 +625,7 @@ def main():
         else:
             builder.build_bytes_only()
 
-    # Compute avg_bytes_per_token for BPE models
+    # Compute avg_bytes_per_token for BPE models and set on config
     avg_bytes_per_token = 1.0
     if args.model == "transformer":
         meta_path = Path(args.cache_dir) / "corpus_meta.npz"
@@ -529,11 +635,15 @@ def main():
         else:
             avg_bytes_per_token = 4.5  # reasonable default for Llama-3 on Spanish
         print(f"[BPE] avg_bytes_per_token = {avg_bytes_per_token:.2f}")
+    config.avg_bytes_per_token = avg_bytes_per_token
 
     # ------------------------------------------------------------------
     # 2. Build model
     # ------------------------------------------------------------------
-    model, is_byte_level, vocab_size = build_model(args.model, args.size)
+    build_kwargs = {}
+    if args.tokenizer_name is not None:
+        build_kwargs["tokenizer_name"] = args.tokenizer_name
+    model, is_byte_level, vocab_size = build_model(args.model, args.size, **build_kwargs)
 
     # ------------------------------------------------------------------
     # 3. Build data loaders
@@ -559,6 +669,7 @@ def main():
         result = generate_final_results(
             model, val_loader, config, is_byte_level, vocab_size,
             avg_bytes_per_token, device=device,
+            output_dir=str(Path(config.output_dir) / f"{args.model}_{args.size}"),
         )
         # Save single result as CSV
         out_csv = Path(config.output_dir) / f"results_{args.model}_{args.size}.csv"
@@ -586,6 +697,7 @@ def main():
     result = generate_final_results(
         model, val_loader, config, is_byte_level, vocab_size,
         avg_bytes_per_token, device=device,
+        output_dir=str(Path(config.output_dir) / f"{args.model}_{args.size}"),
     )
     out_csv = Path(config.output_dir) / f"results_{args.model}_{args.size}.csv"
     save_results_csv([result], str(out_csv))

@@ -24,11 +24,10 @@ import torch.nn as nn
 # Ensure local repos are importable
 # ---------------------------------------------------------------------------
 _TESIS = Path(__file__).resolve().parent
-_MATMULFREE = _TESIS / "matmulfreellm-master"
-_HNET_MAIN = _TESIS / "hnet-main"
+_MATMULFREE = _TESIS / "matmulfreellm"
 _HNET_BIT = _TESIS / "hnet_bit"
 
-for _p in [str(_TESIS), str(_MATMULFREE), str(_HNET_BIT), str(_HNET_MAIN)]:
+for _p in [str(_TESIS), str(_MATMULFREE), str(_HNET_BIT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -38,6 +37,8 @@ for _p in [str(_TESIS), str(_MATMULFREE), str(_HNET_BIT), str(_HNET_MAIN)]:
 # ============================================================================
 
 TRANSFORMER_CONFIGS = {
+    "tiny": dict(hidden_size=64,  num_hidden_layers=2, num_attention_heads=2,
+                 intermediate_size=128,  max_position_embeddings=256),
     "150M": dict(hidden_size=768,  num_hidden_layers=12, num_attention_heads=12,
                  intermediate_size=3072,  max_position_embeddings=2048),
     "350M": dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16,
@@ -47,12 +48,19 @@ TRANSFORMER_CONFIGS = {
 }
 
 MATMULFREE_CONFIGS = {
+    "tiny": dict(hidden_size=64,  num_hidden_layers=2, vocab_size=256),
     "150M": dict(hidden_size=768,  num_hidden_layers=16, vocab_size=256),
     "350M": dict(hidden_size=1024, num_hidden_layers=24, vocab_size=256),
     "750M": dict(hidden_size=1536, num_hidden_layers=28, vocab_size=256),
 }
 
 HYBRID_CONFIGS = {
+    # Smoke test: 1‑stage hierarchy, tiny
+    "tiny": dict(
+        d_model=[48, 64],
+        num_blocks=[[1, 0, 1], [2]],
+        num_heads=1, expand_ratio=1, hidden_ratio=2,
+    ),
     # 1‑stage hierarchy — d_model=[outer, inner]
     "150M": dict(
         d_model=[576, 768],
@@ -81,11 +89,11 @@ def _count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
-def build_transformer(size: str, tokenizer_name: str = "meta-llama/Llama-3.2-1B") -> Tuple[nn.Module, bool, int]:
+def build_transformer(size: str, tokenizer_name: str = "gpt2") -> Tuple[nn.Module, bool, int]:
     """
     Build a Llama‑style Transformer baseline.
 
-    Uses the Llama‑3 tokenizer for BPE.
+    Uses GPT‑2 tokenizer for BPE (change via --tokenizer_name).
     Returns (model, is_byte_level=False, vocab_size).
     """
     from transformers import LlamaConfig, LlamaForCausalLM, AutoTokenizer
@@ -171,6 +179,45 @@ def build_hybrid(size: str) -> Tuple[nn.Module, bool, int]:
     return model, True, 256
 
 
+def build_hybrid_attn(size: str) -> Tuple[nn.Module, bool, int]:
+    """
+    Build the Hybrid model with attention in the innermost stage.
+
+    Same architecture as build_hybrid, but interleaves CausalMHABit
+    with HGRN blocks at the deepest hierarchy level. Pattern is
+    "xaxa" (HGRN-Attention-HGRN-Attention...) with sliding window
+    size 64 and RoPE positional embeddings.
+
+    Returns (model, is_byte_level=True, vocab_size=256).
+    """
+    from hnet_bit.models.hnet_bit import HNetBitConfig, HNetBitForCausalLM
+
+    cfg_overrides = HYBRID_CONFIGS[size]
+    config = HNetBitConfig(
+        vocab_size=256,
+        attn_mode="fused_recurrent",
+        hidden_act="swish",
+        max_position_embeddings=8192,
+        rms_norm_eps=1e-6,
+        use_cache=True,
+        use_fused_bitlinear=False,
+        use_short_conv=True,
+        conv_size=4,
+        share_conv_kernel=True,
+        use_lower_bound=False,
+        bos_token_id=254,
+        eos_token_id=255,
+        innermost_use_attention=True,
+        attention_layers_pattern="xaxa",
+        attention_window_size=64,
+        **cfg_overrides,
+    )
+
+    model = HNetBitForCausalLM(config)
+    print(f"[Hybrid-Attn {size}] Parameters: {_count_params(model):,}  vocab=256")
+    return model, True, 256
+
+
 # ============================================================================
 # Dispatcher
 # ============================================================================
@@ -179,6 +226,7 @@ MODEL_BUILDERS = {
     "transformer": build_transformer,
     "matmulfree": build_matmulfree,
     "hybrid": build_hybrid,
+    "hybrid_attn": build_hybrid_attn,
 }
 
 
@@ -195,6 +243,6 @@ def build_model(model_name: str, size: str, **kwargs) -> Tuple[nn.Module, bool, 
     """
     if model_name not in MODEL_BUILDERS:
         raise ValueError(f"Unknown model: {model_name}. Choose from {list(MODEL_BUILDERS)}")
-    if size not in ("150M", "350M", "750M"):
-        raise ValueError(f"Unknown size: {size}. Choose from 150M, 350M, 750M")
+    if size not in ("tiny", "150M", "350M", "750M"):
+        raise ValueError(f"Unknown size: {size}. Choose from tiny, 150M, 350M, 750M")
     return MODEL_BUILDERS[model_name](size, **kwargs)

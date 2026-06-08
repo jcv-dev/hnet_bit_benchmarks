@@ -132,7 +132,7 @@ The model operates on **byte-level tokens** — each token is one byte from the 
 **Byte-level tokenization** means:
 - Each byte in the UTF-8 encoding becomes a discrete token
 - Multi-byte characters (emoji, Chinese, etc.) span multiple tokens
-- Example: `"Hello 😀"` → `[72, 101, 108, 108, 111, 32, 240, 159, 152, 128]` (10 tokens)
+- Example: `"Hello :D"` → `[72, 101, 108, 108, 111, 32, 240, 159, 152, 128]` (10 tokens)
   - ASCII characters: 1 character ≈ 1 token
   - Unicode characters: 1 character = 1-4 tokens (depending on encoding)
 
@@ -173,16 +173,16 @@ text → bytes (256 vocab, universal) → dynamic chunking → hierarchical proc
 #### What "End-to-End" Does NOT Mean
 
 Based on the original H-Net codebase:
-- ❌ **NOT** eliminating all discrete tokenization (bytes are still discrete symbols)
-- ❌ **NOT** learning from continuous signals (audio waveforms, pixels)
-- ❌ **NOT** learning what "bytes" represent (UTF-8 encoding is predetermined)
+- MISSING **NOT** eliminating all discrete tokenization (bytes are still discrete symbols)
+- MISSING **NOT** learning from continuous signals (audio waveforms, pixels)
+- MISSING **NOT** learning what "bytes" represent (UTF-8 encoding is predetermined)
 
 Instead, "end-to-end" means:
-- ✅ Learning **how to segment** bytes into meaningful chunks
-- ✅ Learning **multiple levels** of abstraction hierarchically
-- ✅ Optimizing **all stages jointly** without intermediate supervision
+- OK Learning **how to segment** bytes into meaningful chunks
+- OK Learning **multiple levels** of abstraction hierarchically
+- OK Optimizing **all stages jointly** without intermediate supervision
 
-#### This Implementation Matches Original H-Net ✅
+#### This Implementation Matches Original H-Net OK
 
 **Your implementation is architecturally correct** and follows the same design as the original H-Net:
 - Same byte tokenization (vocab_size=256)
@@ -193,16 +193,16 @@ Instead, "end-to-end" means:
 #### Advantages Over BPE Tokenization
 
 Byte-level operation with learned chunking provides:
-- ✅ **Universal vocabulary**: Works on any language, code, or UTF-8 data
-- ✅ **No vocabulary artifacts**: No tokenizer-specific biases or boundaries
-- ✅ **No OOV tokens**: All possible byte sequences are valid
-- ✅ **Learned segmentation**: Boundaries adapt to content and context
-- ✅ **Better cross-lingual transfer**: Especially for languages poorly covered by BPE training
+- OK **Universal vocabulary**: Works on any language, code, or UTF-8 data
+- OK **No vocabulary artifacts**: No tokenizer-specific biases or boundaries
+- OK **No OOV tokens**: All possible byte sequences are valid
+- OK **Learned segmentation**: Boundaries adapt to content and context
+- OK **Better cross-lingual transfer**: Especially for languages poorly covered by BPE training
 
 #### The Tradeoff
 
-- ⚠️ **Longer sequences**: Byte-level is 3-4× longer than subword tokenization
-- ✅ **Mitigated by hierarchy**: Dynamic chunking compresses effectively at deeper stages
+- WARNING️ **Longer sequences**: Byte-level is 3-4× longer than subword tokenization
+- OK **Mitigated by hierarchy**: Dynamic chunking compresses effectively at deeper stages
 
 ---
 
@@ -429,6 +429,8 @@ A `HGRNBitStack` is simply:
 - A final `RMSNorm`
 
 It is used as the **encoder**, **decoder**, or **innermost** network at each stage. Each stack operates at a single dimension `d_model[stage_idx]`.
+
+When `config.innermost_use_attention=True`, the stack interleaves HGRN and attention blocks according to `config.attention_layers_pattern`. The pattern is a string of characters where `'x'` = HGRN and `'a'` = attention; for example `"xaxa"` produces HGRN-Attention-HGRN-Attention. If the pattern is shorter than the number of layers, it is extended cyclically. This is used by the `hybrid_attn` benchmark model.
 
 The stack also manages the `HGRNBlockCache` — a flat list of per-layer recurrent states:
 ```python
@@ -675,6 +677,18 @@ For each new token:
 
 ## 13. Configuration Presets
 
+### `tiny` (~259K parameters)
+```json
+{
+    "d_model": [48, 64],
+    "num_blocks": [[1, 0, 1], [2]],
+    "num_heads": 1, "expand_ratio": 1, "hidden_ratio": 2
+}
+```
+- 2 dimension levels (1 stage of chunking)
+- 1 encoder block, 2 innermost blocks, 1 decoder block
+- Used for smoke test and verification
+
 ### `small_1stage` (~21M parameters)
 ```json
 {
@@ -708,6 +722,18 @@ For each new token:
 }
 ```
 - Same structure as base, but larger dimensions and more inner blocks
+
+### Benchmark presets (defined in `model_factory.py`)
+The Spanish benchmark uses three size tiers for each architecture:
+
+| Size | transformer | matmulfree | hybrid (d_model) | hybrid (blocks) | Notes |
+|---|---|---|---|---|---|
+| tiny | 2 layers, 64d | 2 layers, 64d | [48, 64] | [[1,0,1], [2]] | Smoke test |
+| 150M | 12 layers, 768d | 16 layers, 768d | [576, 768] | [[4,0,4], [10]] | Default |
+| 350M | 24 layers, 1024d | 24 layers, 1024d | [640, 896, 1152] | [[4,0,4], [4,0,4], [12]] | 2-stage |
+| 750M | 24 layers, 1536d | 28 layers, 1536d | [896, 1152, 1536] | [[6,0,6], [6,0,6], [16]] | 2-stage |
+
+An additional `hybrid_attn` model type is available that uses the same configs as `hybrid` but enables `innermost_use_attention=True` with `attention_layers_pattern="xaxa"` (alternating HGRN and sliding-window attention blocks, window size 64, RoPE). This is an ablation to test whether attention at the deepest hierarchy level improves over pure-HGRN processing. Run with `python train_spanish.py --model hybrid_attn --size 150M`.
 
 ---
 
@@ -749,20 +775,40 @@ All of these are either small (1D parameters) or critical for numerical stabilit
 
 ## 15. File Map
 
+### HNetBit model implementation (`hnet_bit/`)
+
 | File | Purpose |
 |------|---------|
 | `models/hnet_bit.py` | `HNetBitConfig`, `HGRNBitStack`, `HNetBit` (recursive backbone), `HNetBitForCausalLM` (full model) |
 | `layers/hgrn_bit.py` | `HGRNBitAttention`, `HGRNBitMLP`, `HGRNBitBlock` |
 | `ops/bitnet.py` | `BitLinear`, `RMSNorm`, `weight_quant`, `activation_quant` |
-| `ops/fusedbitnet.py` | `FusedBitLinear` — Triton-optimized BitLinear (optional) |
+| `ops/fusedbitnet.py` | `FusedBitLinear` — Triton-optimized BitLinear with CPU fallback |
 | `ops/dynamic_chunking.py` | `RoutingModuleBit`, `ChunkLayer`, `DeChunkLayer`, dataclasses |
 | `ops/activations.py` | `SwiGLU` (CUDA jiterator + CPU fallback) |
-| `ops/fused_norm_gate.py` | `FusedRMSNormSwishGate` |
+| `ops/fused_norm_gate.py` | `FusedRMSNormSwishGate` with Triton + CPU fallback |
+| `ops/short_conv.py` | Optional short convolution for local inductive bias |
 | `ops/hgrn/recurrent_fuse.py` | `fused_recurrent_hgrn` — Triton kernel + naive CPU fallback |
 | `ops/hgrn/chunk.py` | `chunk_hgrn` — chunked parallel scan + naive CPU fallback |
 | `utils/hnet_cache.py` | `HGRNBlockCache`, `HNetBitCache` — recursive cache for generation |
 | `utils/tokenizers.py` | Byte-level tokenizer utilities |
+| `utils/helpers.py` | `contiguous` decorator, `apply_optimization_params` |
 | `configs/hnet_bit_1stage.json` | Small 1-stage config |
 | `configs/hnet_bit_2stage.json` | Base 2-stage config |
-| `training/` | Training infrastructure (trainer, optimizer, data, logger) |
-| `tests/` | Test suites: `test_hnet_bit.py`, `test_dynamic_chunking.py`, `test_fused_bitlinear.py` |
+| `training/` | Standalone training infrastructure (trainer, optimizer, data, logger) |
+| `scripts/` | Dataset prep, evaluation, experiment pipeline |
+| `tests/` | Test suites (hnet_bit, dynamic_chunking, fused_bitlinear, etc.) |
+| `docs/TRAINING_GUIDE.md` | Standalone training documentation |
+
+### Benchmark pipeline (root level)
+
+| File | Purpose |
+|------|---------|
+| `train_spanish.py` | Unified training script for three architectures on Spanish Billion Words |
+| `model_factory.py` | Builds transformer, matmulfree, and hybrid models at configurable sizes |
+| `training_config_spanish.py` | SpanishTrainingConfig dataclass and WSD scheduler |
+| `data_spanish.py` | Dataset loading (byte and BPE), memory-mapped datasets |
+| `metrics_spanish.py` | BPB computation and inference memory measurement |
+| `generate_results.py` | Aggregates per-run results into a single CSV table |
+| `test_smoke.sh` | Smoke test script (hybrid on CPU, all three with `--gpu` flag) |
+| `matmulfreellm/` | Reference MatMulFree repository (HGRN kernels, BitLinear) |
+| `hnet-main/` | Reference HNet repository (dynamic chunking, Isotropic blocks) |
