@@ -148,6 +148,7 @@ def collect_existing_results(runs_dir: str) -> list[dict]:
                         row["Training_Time_Hours"] = round(stats.get("training_time_hours", 0), 2)
                         row["Training_Time_Seconds"] = round(stats.get("training_time_seconds", 0), 0)
                         row["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
+                        row["Non_Emb_Params_M"] = round(stats.get("non_embedding_param_count", 0) / 1_000_000, 1)
                         row["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
                         row["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
                         row["Peak_Reserved_Memory_MB"] = round(stats.get("peak_reserved_memory_mb", 0), 0)
@@ -247,6 +248,7 @@ def reevaluate_checkpoints(
                     stats = json.load(sf)
                 result["Training_Time_Hours"] = round(stats.get("training_time_hours", 0), 2)
                 result["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
+                result["Non_Emb_Params_M"] = round(stats.get("non_embedding_param_count", 0) / 1_000_000, 1)
                 result["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
                 result["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
                 compression = stats.get("overall_compression_ratio")
@@ -282,7 +284,7 @@ def save_results(results: list[dict], output_path: str) -> None:
         "Val_BPB_at_25B", "Val_BPB_at_50B", "Val_BPB_at_100B",
         "Inference_Memory_MB",
         # Model stats
-        "Param_Count_M", "Disk_Size_MB",
+        "Param_Count_M", "Non_Emb_Params_M", "Disk_Size_MB",
         "Peak_Training_Memory_MB", "Peak_Reserved_Memory_MB",
         "Overall_Compression_Ratio",
         # Training stats
@@ -304,14 +306,15 @@ def save_results(results: list[dict], output_path: str) -> None:
         writer.writerows(results)
 
     # Print concise summary table
-    print(f"\n{'='*160}")
-    print(f"{'Model':<15} {'Size':<8} {'Params M':<9} {'BPB':<8} {'Loss':<8} "
+    print(f"\n{'='*170}")
+    print(f"{'Model':<15} {'Size':<8} {'Params M':<9} {'NonEmb M':<9} {'BPB':<8} {'Loss':<8} "
           f"{'Train Mem':<10} {'Disk MB':<8} {'Compress':<9} {'Tok/s':<8} {'Hours':<8}")
-    print(f"{'-'*160}")
+    print(f"{'-'*170}")
     for r in results:
         print(
             f"{str(r.get('Model','')):<15} {str(r.get('Size','')):<8} "
             f"{str(r.get('Param_Count_M', '')):<9} "
+            f"{str(r.get('Non_Emb_Params_M', '')):<9} "
             f"{str(r.get('Best_Val_BPB', r.get('BPB_Final', ''))):<8} "
             f"{str(r.get('Best_Val_Loss', '')):<8} "
             f"{str(r.get('Peak_Training_Memory_MB','')):<10} "

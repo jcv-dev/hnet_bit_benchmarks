@@ -103,6 +103,10 @@ class SpanishTrainer:
         # Parameter count
         self.param_count = sum(p.numel() for p in self.model.parameters())
         self.trainable_param_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.non_embedding_param_count = sum(
+            p.numel() for name, p in self.model.named_parameters()
+            if 'embed' not in name and 'lm_head' not in name
+        )
 
         # Reset CUDA peak memory stats to measure training peak later
         if torch.cuda.is_available():
@@ -323,6 +327,7 @@ class SpanishTrainer:
             "bytes_seen": self.tokens_seen,
             "param_count": self.param_count,
             "trainable_param_count": self.trainable_param_count,
+            "non_embedding_param_count": self.non_embedding_param_count,
             "disk_size_mb": round(disk_size_mb, 1),
             "peak_training_memory_mb": round(peak_memory_mb, 0),
             "peak_reserved_memory_mb": round(peak_reserved_mb, 0),
@@ -495,6 +500,7 @@ def generate_final_results(
             result["Training_Time_Seconds"] = round(stats.get("training_time_seconds", 0), 0)
             result["Param_Count_M"] = round(stats.get("param_count", 0) / 1_000_000, 1)
             result["Param_Count"] = stats.get("param_count", 0)
+            result["Non_Emb_Params_M"] = round(stats.get("non_embedding_param_count", 0) / 1_000_000, 1)
             result["Disk_Size_MB"] = round(stats.get("disk_size_mb", 0), 1)
             result["Peak_Training_Memory_MB"] = round(stats.get("peak_training_memory_mb", 0), 0)
             result["Peak_Reserved_Memory_MB"] = round(stats.get("peak_reserved_memory_mb", 0), 0)
@@ -503,14 +509,17 @@ def generate_final_results(
                 result["Overall_Compression_Ratio"] = round(compression, 4)
         else:
             result["Training_Time_Hours"] = ""
-            # Compute param count from model directly if no stats file
+            # Compute param counts from model directly if no stats file
             p = sum(p.numel() for p in model.parameters())
+            non_emb = sum(p.numel() for name, p in model.named_parameters()
+                          if 'embed' not in name and 'lm_head' not in name)
             result["Param_Count_M"] = round(p / 1_000_000, 1)
+            result["Non_Emb_Params_M"] = round(non_emb / 1_000_000, 1)
 
     print(f"  BPB               : {result['BPB']:.4f}")
     print(f"  Val Loss          : {result['Val_Loss']:.4f}")
     print(f"  Perplexity        : {result['Val_Perplexity']:.2f}")
-    print(f"  Params            : {result.get('Param_Count_M', '?')}M")
+    print(f"  Params            : {result.get('Param_Count_M', '?')}M total ({result.get('Non_Emb_Params_M', '?')}M non-embedding)")
     if "Peak_Training_Memory_MB" in result and result["Peak_Training_Memory_MB"]:
         print(f"  Peak Train Mem   : {result['Peak_Training_Memory_MB']:.0f} MB")
     print(f"  Inference Memory  : {result['Inference_Memory_MB']:.1f} MB")

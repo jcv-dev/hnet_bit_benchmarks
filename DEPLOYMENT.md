@@ -186,7 +186,73 @@ ps aux | grep train_spanish
 tensorboard --logdir runs/spanish --bind_all
 ```
 
-## 8. Retrieve results
+## 8. Run order and schedule
+
+Run all models grouped by size tier. Generate partial results after each tier, then a final aggregate at the end.
+
+### Before starting
+
+Delete any prep-run artifacts (from the dataset build step):
+
+```bash
+rm -rf runs/spanish/*
+```
+
+### Tier 1: 150M (4 runs)
+
+Run on a single A100. Estimated time: ~120 hours total (sequential) or ~40 hours (parallel).
+
+```bash
+rm -rf runs/spanish/*
+
+# Launch all 4 in parallel (one per tmux session):
+tmux new -s hybrid_150M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 150M'
+tmux new -s transformer_150M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 150M'
+tmux new -s matmulfree_150M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 150M'
+tmux new -s hybrid_attn_150M -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid_attn  --size 150M'
+
+# Monitor:
+tmux attach -t hybrid_150M
+```
+
+After all 4 complete, aggregate results for the 150M tier:
+
+```bash
+python generate_results.py --runs_dir ./runs/spanish --output results_150M.csv
+```
+
+This writes `results_150M.csv` with only the 150M rows. It is read-only on the per-run data — it never modifies config.json, checkpoints, or logs.
+
+### Tier 2: 350M (3 runs: hybrid, transformer, matmulfree)
+
+No hybrid_attn at 350M (the attention ablation is only run at 150M).
+
+```bash
+tmux new -s hybrid_350M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 350M'
+tmux new -s transformer_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 350M'
+tmux new -s matmulfree_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 350M'
+
+# After all complete:
+python generate_results.py --runs_dir ./runs/spanish --output results_350M.csv
+```
+
+### Tier 3: 750M (3 runs: hybrid, transformer, matmulfree)
+
+```bash
+tmux new -s hybrid_750M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 750M'
+tmux new -s transformer_750M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 750M'
+tmux new -s matmulfree_750M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 750M'
+```
+
+### Final aggregate
+
+```bash
+python generate_results.py --runs_dir ./runs/spanish --output results.csv
+```
+
+`generate_results.py` is safe to run multiple times — it only reads per-run data files and writes the CSV specified by `--output`. Each call to a different output file produces independent results.
+
+## 9. Retrieve results
 
 ### Option A: rsync results back to local
 
