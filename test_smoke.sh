@@ -58,9 +58,10 @@ with open('$DATA_DIR/corpus.bin', 'wb') as f:
 print(f'  Wrote {len(content)} bytes -> corpus.bin')
 "
 
-# For transformer: build BPE data using a non-gated tokenizer
+# For transformer: delete stale BPE data and rebuild from current corpus
 if [[ " ${MODELS[*]} " == *" transformer "* ]]; then
     echo "--- Building BPE corpus for transformer ---"
+    rm -f "$DATA_DIR"/corpus_bpe.npy "$DATA_DIR"/byte2token_offsets.npy "$DATA_DIR"/corpus_meta.npz
     python3 -c "
 import numpy as np
 from pathlib import Path
@@ -72,7 +73,6 @@ builder = SpanishCorpusBuilder(
     tokenizer_name='gpt2',
     max_samples=10,
 )
-builder.build_bytes_only(force=False)
 total_tokens, avg = builder.build_bpe(force=False)
 meta = dict(total_bytes=builder.byte_path.stat().st_size,
             total_tokens=total_tokens,
