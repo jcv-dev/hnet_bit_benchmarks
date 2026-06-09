@@ -135,65 +135,62 @@ class SpanishCorpusBuilder:
 
     def _write_bpe_corpus(self) -> Tuple[int, float]:
         from transformers import AutoTokenizer
-        from numpy.lib.format import open_memmap
+        import struct
 
         tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         total_bytes = self.byte_path.stat().st_size
 
-        # Pass 1: count tokens (fast, no storage)
         CHUNK = 10 * 1024 * 1024  # 10 MB
+        raw_path = self.cache_dir / "corpus_bpe.raw"
         total_tokens = 0
-        chunk_tokens: list[int] = []  # token count per chunk for replay in pass 2
 
-        print(f"[SpanishCorpus] Pass 1/2: counting tokens ({total_bytes:,} bytes) ...")
+        print(f"[SpanishCorpus] Tokenizing {total_bytes:,} bytes with {self.tokenizer_name} ...")
 
-        byte_offset = 0
-        with open(self.byte_path, "rb") as f:
-            while True:
-                raw = f.read(CHUNK)
-                if not raw:
-                    break
-                text = raw.decode("utf-8", errors="replace")
-                tokens = tokenizer.encode(text, add_special_tokens=False)
-                chunk_tokens.append(len(tokens))
-                total_tokens += len(tokens)
-                byte_offset += len(raw)
+        # Write raw token IDs to a plain binary file (avoids mmap page cache growth)
+        with open(raw_path, "wb") as out:
+            byte_offset = 0
+            with open(self.byte_path, "rb") as f:
+                while True:
+                    raw = f.read(CHUNK)
+                    if not raw:
+                        break
+                    text = raw.decode("utf-8", errors="replace")
+                    tokens = tokenizer.encode(text, add_special_tokens=False)
+                    if tokens:
+                        out.write(np.array(tokens, dtype=np.int32).tobytes())
+                        total_tokens += len(tokens)
+                    byte_offset += len(raw)
 
-                if byte_offset % (500 * 1024 * 1024) == 0:
-                    pct = 100.0 * byte_offset / total_bytes
-                    print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
-                          f"{total_tokens:,} tokens counted")
+                    if byte_offset % (500 * 1024 * 1024) == 0:
+                        pct = 100.0 * byte_offset / total_bytes
+                        print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
+                              f"{total_tokens:,} tokens")
+                        out.flush()  # start writeback, don't wait
 
-        print(f"  [100%] Pass 1 done: {total_tokens:,} tokens in {len(chunk_tokens)} chunks")
+        # Build .npy header and prepend to the raw file
+        print(f"[SpanishCorpus] Writing {total_tokens:,} tokens → {self.bpe_path} ...")
+        # Magic + version + header length + header dict (padded to 64 bytes)
+        header_dict = {"descr": "<i4", "fortran_order": False, "shape": (total_tokens,)}
+        import io
+        buf = io.BytesIO()
+        np.lib.format._write_array_header(buf, header_dict)
+        header_data = buf.getvalue()
+        # Prepend magic + version + header_len + header to raw file
+        with open(self.bpe_path, "wb") as npy_file:
+            npy_file.write(b"\x93NUMPY\x01\x00")
+            npy_file.write(struct.pack("<H", len(header_data)))
+            npy_file.write(header_data)
+            with open(raw_path, "rb") as raw_f:
+                while True:
+                    buf = raw_f.read(64 * 1024 * 1024)
+                    if not buf:
+                        break
+                    npy_file.write(buf)
 
-        # Pass 2: write directly to a memory-mapped .npy file (never loaded into RAM)
-        print(f"[SpanishCorpus] Pass 2/2: writing {total_tokens:,} tokens to {self.bpe_path} ...")
-        token_mmap = open_memmap(
-            self.bpe_path, mode="w+", dtype=np.int32, shape=(total_tokens,)
-        )
-
-        byte_offset = 0
-        token_offset = 0
-        with open(self.byte_path, "rb") as f:
-            for chunk_len in chunk_tokens:
-                raw = f.read(CHUNK)
-                if not raw:
-                    break
-                text = raw.decode("utf-8", errors="replace")
-                tokens = tokenizer.encode(text, add_special_tokens=False)
-                token_mmap[token_offset:token_offset + chunk_len] = tokens
-                token_offset += chunk_len
-                byte_offset += len(raw)
-
-                if byte_offset % (500 * 1024 * 1024) == 0:
-                    pct = 100.0 * token_offset / total_tokens
-                    print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
-                          f"{token_offset:,} / {total_tokens:,} tokens")
-
-        token_mmap.flush()
+        os.unlink(raw_path)
 
         avg = total_bytes / max(total_tokens, 1)
-        total_bytes_on_disk = total_tokens * 4  # int32 = 4 bytes per token
+        total_bytes_on_disk = total_tokens * 4
         print(f"[SpanishCorpus] Wrote {total_tokens:,} tokens → {self.bpe_path}")
         print(f"  Disk: {total_bytes_on_disk / 1024**3:.1f} GB  "
               f"Average bytes per token: {avg:.2f}")
