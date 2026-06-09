@@ -24,6 +24,32 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 
 
 # --------------------------------------------------------------------------
+# BPE tokenization worker (runs in subprocess to avoid memory accumulation)
+# --------------------------------------------------------------------------
+
+def _tokenize_worker(conn, tokenizer_name):
+    """Child subprocess: loads tokenizer once, processes chunks until poison pill.
+
+    Runs in a separate process so Python heap memory from tokenization is
+    returned to the OS when the process exits.
+    """
+    from transformers import AutoTokenizer
+    import numpy as np
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
+    while True:
+        chunk = conn.recv()
+        if chunk is None:
+            break
+
+        text = chunk.decode("utf-8", errors="replace")
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        result = np.array(tokens, dtype=np.int32).tobytes() if tokens else b""
+        conn.send(result)
+
+
+# --------------------------------------------------------------------------
 # 1. Corpus builder: download, concatenate, write binary files
 # --------------------------------------------------------------------------
 
@@ -134,10 +160,9 @@ class SpanishCorpusBuilder:
         return total
 
     def _write_bpe_corpus(self) -> Tuple[int, float]:
-        from transformers import AutoTokenizer
+        from multiprocessing import Process, Pipe
         import struct
 
-        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         total_bytes = self.byte_path.stat().st_size
 
         CHUNK = 10 * 1024 * 1024  # 10 MB
@@ -146,36 +171,52 @@ class SpanishCorpusBuilder:
 
         print(f"[SpanishCorpus] Tokenizing {total_bytes:,} bytes with {self.tokenizer_name} ...")
 
-        # Write raw token IDs to a plain binary file (avoids mmap page cache growth)
-        with open(raw_path, "wb") as out:
-            byte_offset = 0
-            with open(self.byte_path, "rb") as f:
-                while True:
-                    raw = f.read(CHUNK)
-                    if not raw:
-                        break
-                    text = raw.decode("utf-8", errors="replace")
-                    tokens = tokenizer.encode(text, add_special_tokens=False)
-                    if tokens:
-                        out.write(np.array(tokens, dtype=np.int32).tobytes())
-                        total_tokens += len(tokens)
-                    byte_offset += len(raw)
+        # Spawn worker subprocess — its entire Python heap is reclaimed on exit
+        parent_conn, child_conn = Pipe()
+        worker = Process(target=_tokenize_worker, args=(child_conn, self.tokenizer_name))
+        worker.start()
+        child_conn.close()
 
-                    if byte_offset % (500 * 1024 * 1024) == 0:
-                        pct = 100.0 * byte_offset / total_bytes
-                        print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
-                              f"{total_tokens:,} tokens")
-                        out.flush()  # start writeback, don't wait
+        try:
+            with open(raw_path, "wb") as out:
+                byte_offset = 0
+                with open(self.byte_path, "rb") as f:
+                    while True:
+                        raw = f.read(CHUNK)
+                        if not raw:
+                            break
+
+                        parent_conn.send(raw)
+                        result = parent_conn.recv()
+                        if result:
+                            out.write(result)
+                            total_tokens += len(result) // 4
+
+                        byte_offset += len(raw)
+
+                        if byte_offset % (500 * 1024 * 1024) == 0:
+                            pct = 100.0 * byte_offset / total_bytes
+                            print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
+                                  f"{total_tokens:,} tokens")
+                            out.flush()
+        finally:
+            try:
+                parent_conn.send(None)
+            except (BrokenPipeError, EOFError):
+                pass
+            worker.join(timeout=30)
+            if worker.is_alive():
+                worker.kill()
+                worker.join()
+            parent_conn.close()
 
         # Build .npy header and prepend to the raw file
         print(f"[SpanishCorpus] Writing {total_tokens:,} tokens → {self.bpe_path} ...")
-        # Magic + version + header length + header dict (padded to 64 bytes)
         header_dict = {"descr": "<i4", "fortran_order": False, "shape": (total_tokens,)}
         import io
         buf = io.BytesIO()
         np.lib.format._write_array_header(buf, header_dict)
         header_data = buf.getvalue()
-        # Prepend magic + version + header_len + header to raw file
         with open(self.bpe_path, "wb") as npy_file:
             npy_file.write(b"\x93NUMPY\x01\x00")
             npy_file.write(struct.pack("<H", len(header_data)))
