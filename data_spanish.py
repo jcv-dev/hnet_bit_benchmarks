@@ -145,8 +145,9 @@ class SpanishCorpusBuilder:
         total_tokens = 0
         chunk_tokens: list[int] = []  # token count per chunk for replay in pass 2
 
-        print(f"[SpanishCorpus] Counting tokens ({total_bytes:,} bytes) ...")
+        print(f"[SpanishCorpus] Pass 1/2: counting tokens ({total_bytes:,} bytes) ...")
 
+        byte_offset = 0
         with open(self.byte_path, "rb") as f:
             while True:
                 raw = f.read(CHUNK)
@@ -156,9 +157,17 @@ class SpanishCorpusBuilder:
                 tokens = tokenizer.encode(text, add_special_tokens=False)
                 chunk_tokens.append(len(tokens))
                 total_tokens += len(tokens)
+                byte_offset += len(raw)
+
+                if byte_offset % (500 * 1024 * 1024) == 0:
+                    pct = 100.0 * byte_offset / total_bytes
+                    print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
+                          f"{total_tokens:,} tokens counted")
+
+        print(f"  [100%] Pass 1 done: {total_tokens:,} tokens in {len(chunk_tokens)} chunks")
 
         # Pass 2: write directly to a memory-mapped .npy file (never loaded into RAM)
-        print(f"[SpanishCorpus] Writing {total_tokens:,} tokens to {self.bpe_path} ...")
+        print(f"[SpanishCorpus] Pass 2/2: writing {total_tokens:,} tokens to {self.bpe_path} ...")
         token_mmap = open_memmap(
             self.bpe_path, mode="w+", dtype=np.int32, shape=(total_tokens,)
         )
@@ -176,8 +185,9 @@ class SpanishCorpusBuilder:
                 token_offset += chunk_len
                 byte_offset += len(raw)
 
-                if byte_offset % (100 * 1024 * 1024) == 0:
-                    print(f"  Written {byte_offset // (1024*1024):,} MB — "
+                if byte_offset % (500 * 1024 * 1024) == 0:
+                    pct = 100.0 * token_offset / total_tokens
+                    print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
                           f"{token_offset:,} / {total_tokens:,} tokens")
 
         token_mmap.flush()
