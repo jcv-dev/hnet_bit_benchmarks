@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Thesis benchmark comparing three language model architectures on Spanish Billion Words (100B-byte training budget):
+Thesis benchmark comparing three language model architectures on Spanish Billion Words (25B-byte training budget):
 
 - `transformer` — Llama-style, BPE tokenizer (gpt2), FP16 weights, HuggingFace
 - `matmulfree` — flat HGRN recurrent LM, byte-level, ternary {-1,0,+1} weights (from `matmulfreellm/`)

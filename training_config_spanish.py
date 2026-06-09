@@ -83,11 +83,11 @@ class SpanishTrainingConfig:
     cache_dir: str = "./data/spanish"
 
     # Sequence lengths (bytes for byte‑level, tokens for BPE)
-    byte_seq_length: int = 8192
-    token_seq_length: int = 1792    # approx 8192 bytes / 4.57 bytes‑per‑token
+    byte_seq_length: int = 4096
+    token_seq_length: int = 1280    # approx 4096 bytes / 3.2 bytes‑per‑token
 
     # Training schedule (total_training_bytes = bytes of underlying text, same for all models)
-    total_training_bytes: int = 100_000_000_000   # 100B
+    total_training_bytes: int = 25_000_000_000   # 25B
     batch_size: int = 4
     gradient_accumulation_steps: int = 8
 
@@ -119,7 +119,7 @@ class SpanishTrainingConfig:
 
     # Checkpointing milestones (in bytes of training text) for final metrics
     checkpoint_milestones: List[int] = field(
-        default_factory=lambda: [25_000_000_000, 50_000_000_000, 100_000_000_000]
+        default_factory=lambda: [6_250_000_000, 12_500_000_000, 18_750_000_000, 25_000_000_000]
     )
 
     # Inference memory measurement
