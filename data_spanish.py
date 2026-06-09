@@ -135,47 +135,55 @@ class SpanishCorpusBuilder:
 
     def _write_bpe_corpus(self) -> Tuple[int, float]:
         from transformers import AutoTokenizer
-        import tempfile
+        from numpy.lib.format import open_memmap
 
         tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         total_bytes = self.byte_path.stat().st_size
 
-        # We tokenize in chunks and write to a temporary binary file on disk
-        # instead of accumulating in memory (22B tokens x 4 bytes = 88 GB).
+        # Pass 1: count tokens (fast, no storage)
         CHUNK = 10 * 1024 * 1024  # 10 MB
         total_tokens = 0
+        chunk_tokens: list[int] = []  # token count per chunk for replay in pass 2
 
-        print(f"[SpanishCorpus] Tokenizing {total_bytes:,} bytes with {self.tokenizer_name} ...")
+        print(f"[SpanishCorpus] Counting tokens ({total_bytes:,} bytes) ...")
 
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp_path = tmp.name
-            byte_offset = 0
-            with open(self.byte_path, "rb") as f:
-                while True:
-                    raw = f.read(CHUNK)
-                    if not raw:
-                        break
-                    text = raw.decode("utf-8", errors="replace")
-                    tokens = tokenizer.encode(text, add_special_tokens=False)
-                    if tokens:
-                        tmp.write(np.array(tokens, dtype=np.int32).tobytes())
-                        total_tokens += len(tokens)
-                    byte_offset += len(raw)
+        with open(self.byte_path, "rb") as f:
+            while True:
+                raw = f.read(CHUNK)
+                if not raw:
+                    break
+                text = raw.decode("utf-8", errors="replace")
+                tokens = tokenizer.encode(text, add_special_tokens=False)
+                chunk_tokens.append(len(tokens))
+                total_tokens += len(tokens)
 
-                    if byte_offset % (100 * 1024 * 1024) == 0:
-                        print(f"  Tokenized {byte_offset // (1024*1024):,} MB — "
-                              f"{total_tokens:,} tokens")
+        # Pass 2: write directly to a memory-mapped .npy file (never loaded into RAM)
+        print(f"[SpanishCorpus] Writing {total_tokens:,} tokens to {self.bpe_path} ...")
+        token_mmap = open_memmap(
+            self.bpe_path, mode="w+", dtype=np.int32, shape=(total_tokens,)
+        )
 
-        # Load from temp file into numpy array and save as .npy
-        token_arr = np.fromfile(tmp_path, dtype=np.int32)
-        os.unlink(tmp_path)
-        np.save(self.bpe_path, token_arr)
+        byte_offset = 0
+        token_offset = 0
+        with open(self.byte_path, "rb") as f:
+            for chunk_len in chunk_tokens:
+                raw = f.read(CHUNK)
+                if not raw:
+                    break
+                text = raw.decode("utf-8", errors="replace")
+                tokens = tokenizer.encode(text, add_special_tokens=False)
+                token_mmap[token_offset:token_offset + chunk_len] = tokens
+                token_offset += chunk_len
+                byte_offset += len(raw)
 
-        # byte2token offset mapping is no longer built — it was not consumed
-        # anywhere except for the existence check at line 92 (removed).
+                if byte_offset % (100 * 1024 * 1024) == 0:
+                    print(f"  Written {byte_offset // (1024*1024):,} MB — "
+                          f"{token_offset:,} / {total_tokens:,} tokens")
+
+        token_mmap.flush()
 
         avg = total_bytes / max(total_tokens, 1)
-        total_bytes_on_disk = token_arr.nbytes
+        total_bytes_on_disk = total_tokens * 4  # int32 = 4 bytes per token
         print(f"[SpanishCorpus] Wrote {total_tokens:,} tokens → {self.bpe_path}")
         print(f"  Disk: {total_bytes_on_disk / 1024**3:.1f} GB  "
               f"Average bytes per token: {avg:.2f}")
