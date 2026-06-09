@@ -13,22 +13,39 @@ The RAM started climbing during this phase:
 
 ## Root cause
 
-CPython's pymalloc allocator holds freed memory in internal arenas and does not return it to the OS during the lifetime of the process. Each 10 MB text chunk produces ~3.3M Python int objects (~92 MB heap) via `tokenizer.encode()`. Even though Python frees these objects, the kernel still sees RSS climb monotonically across hundreds of iterations because pymalloc keeps the arenas.
+**Two independent causes**, both rooted in CPython's pymalloc holding freed arenas forever:
+
+1. **`_write_byte_corpus()`** — the `datasets` library (even with `streaming=True`) accumulates internal state while iterating 46.9M samples. ~5 GB of RSS persists after completion.
+
+2. **`_write_bpe_corpus()`** — each 10 MB chunk produces ~3.3M Python int objects (~92 MB) from `tokenizer.encode()`. Across 870 chunks, pymalloc accumulates ~80 GB of arenas in a single process.
 
 ## Fix
 
-Move tokenization into a `multiprocessing.Process` child. The child's address space is fully reclaimed by the OS on exit, zeroing out all accumulated Python heap.
+Move both phases into `multiprocessing.Process` children. Each child's address space is fully reclaimed by the OS on exit.
 
-- Added module-level `_tokenize_worker()` function (pickle-safe, Linux fork-safe)
-- Rewrote `_write_bpe_corpus()` to spawn the worker, feed 10 MB chunks via `multiprocessing.Pipe`, and receive raw int32 bytes back
-- No new dependencies (uses stdlib `multiprocessing`)
-- Worker loads the tokenizer once, processes all chunks, then exits via poison pill (`None`)
+### Byte corpus fix (`_write_byte_corpus`)
 
-The parent process now only ever holds ~10 MB of raw input bytes + ~13 MB of token output bytes, keeping its RSS flat.
+- Added module-level `_byte_corpus_worker()` that does the `load_dataset` + write in a child process
+- Parent spawns the worker, receives the total byte count via `Pipe()`, then joins
+- All `datasets` library memory is freed when the child exits
+
+### BPE tokenization fix (`_write_bpe_corpus`)
+
+- Added module-level `_tokenize_worker()` that loads the tokenizer once and processes chunks until poison pill (`None`)
+- Parent spawns the worker, feeds 10 MB chunks via `Pipe()`, receives int32 bytes back
+- **Worker is recycled every 50 chunks (~500 MB text) via `CHUNKS_PER_WORKER = 50`**. This caps the child's pymalloc accumulation to ~6-8 GB instead of 80+ GB.
+- 18 worker spawns total (870 chunks / 50). Each spawn loads the tokenizer from disk cache (~1-2 seconds).
+
+### Combined effect
+
+Both the parent's and child's RSS stay bounded:
+- Parent: ~15 GB idle + minimal pipe/file buffers
+- Child (peak): ~20 GB COW from fork + ~6-8 GB arena accumulation → ~28 GB max
+- After each worker exits → child memory fully reclaimed
 
 ## File changes
 
-- `data_spanish.py`: added `_tokenize_worker()` function (line 30), rewrote `_write_bpe_corpus()` (line 165)
+- `data_spanish.py`: added `_tokenize_worker()` (line 30), `_byte_corpus_worker()` (line 56), rewrote `_write_byte_corpus()` (line 169), rewrote `_write_bpe_corpus()` (line 188)
 
 ## How to test
 
@@ -37,4 +54,6 @@ rm -f data/spanish/corpus_bpe.npy data/spanish/corpus_meta.npz
 python train_spanish.py --model transformer --size 150M --max_steps 1 --batch_size 1
 ```
 
-Monitor RAM with `htop` — parent process RSS should stay flat (5-10 GB for tokenizer model, doesn't grow).
+Monitor system RAM with `free -h`. Expected behavior:
+- Byte corpus phase: child process accumulates memory (up to ~6 GB above idle) but exits after completion
+- BPE phase: child processes are recycled every 500 MB, system RAM peaks at ~28 GB but doesn't grow monotonically toward OOM

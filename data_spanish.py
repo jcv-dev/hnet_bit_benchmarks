@@ -50,6 +50,36 @@ def _tokenize_worker(conn, tokenizer_name):
 
 
 # --------------------------------------------------------------------------
+# Byte corpus download worker (runs in subprocess to avoid memory accumulation)
+# --------------------------------------------------------------------------
+
+def _byte_corpus_worker(conn, cache_dir, hf_dataset, max_samples):
+    """Child process: downloads the HF dataset and writes the raw byte corpus."""
+    from datasets import load_dataset
+
+    cache_path = Path(cache_dir)
+    byte_path = cache_path / "corpus.bin"
+
+    ds = load_dataset(hf_dataset, split="train", streaming=True, trust_remote_code=True)
+
+    total = 0
+    with open(byte_path, "wb") as f:
+        for i, example in enumerate(ds):
+            if max_samples and i >= max_samples:
+                break
+            text = example.get("text", "")
+            if not text:
+                continue
+            raw = text.encode("utf-8")
+            f.write(raw)
+            total += len(raw)
+            if (i + 1) % 100_000 == 0:
+                print(f"  {i+1:>10,} samples — {total:>15,} bytes")
+
+    conn.send(total)
+
+
+# --------------------------------------------------------------------------
 # 1. Corpus builder: download, concatenate, write binary files
 # --------------------------------------------------------------------------
 
@@ -137,24 +167,20 @@ class SpanishCorpusBuilder:
         return meta
 
     def _write_byte_corpus(self) -> int:
-        from datasets import load_dataset
+        from multiprocessing import Process, Pipe
 
         print(f"[SpanishCorpus] Downloading {self.hf_dataset} ...")
-        ds = load_dataset(self.hf_dataset, split="train", streaming=True, trust_remote_code=True)
+        parent_conn, child_conn = Pipe()
+        worker = Process(
+            target=_byte_corpus_worker,
+            args=(child_conn, self.cache_dir, self.hf_dataset, self.max_samples),
+        )
+        worker.start()
+        child_conn.close()
 
-        total = 0
-        with open(self.byte_path, "wb") as f:
-            for i, example in enumerate(ds):
-                if self.max_samples and i >= self.max_samples:
-                    break
-                text = example.get("text", "")
-                if not text:
-                    continue
-                raw = text.encode("utf-8")
-                f.write(raw)
-                total += len(raw)
-                if (i + 1) % 100_000 == 0:
-                    print(f"  {i+1:>10,} samples — {total:>15,} bytes")
+        total = parent_conn.recv()
+        worker.join()
+        parent_conn.close()
 
         print(f"[SpanishCorpus] Wrote {total:,} bytes → {self.byte_path}")
         return total
@@ -166,49 +192,68 @@ class SpanishCorpusBuilder:
         total_bytes = self.byte_path.stat().st_size
 
         CHUNK = 10 * 1024 * 1024  # 10 MB
+        CHUNKS_PER_WORKER = 50  # ~500 MB text per worker limits child RSS
         raw_path = self.cache_dir / "corpus_bpe.raw"
         total_tokens = 0
 
         print(f"[SpanishCorpus] Tokenizing {total_bytes:,} bytes with {self.tokenizer_name} ...")
 
-        # Spawn worker subprocess — its entire Python heap is reclaimed on exit
-        parent_conn, child_conn = Pipe()
-        worker = Process(target=_tokenize_worker, args=(child_conn, self.tokenizer_name))
-        worker.start()
-        child_conn.close()
+        def _spawn_worker():
+            parent, child = Pipe()
+            proc = Process(target=_tokenize_worker, args=(child, self.tokenizer_name))
+            proc.start()
+            child.close()
+            return proc, parent
 
+        worker, parent_conn = None, None
         try:
-            with open(raw_path, "wb") as out:
+            with open(raw_path, "wb") as out, open(self.byte_path, "rb") as f:
                 byte_offset = 0
-                with open(self.byte_path, "rb") as f:
-                    while True:
-                        raw = f.read(CHUNK)
-                        if not raw:
-                            break
+                chunk_count = 0
 
-                        parent_conn.send(raw)
-                        result = parent_conn.recv()
-                        if result:
-                            out.write(result)
-                            total_tokens += len(result) // 4
+                while True:
+                    if worker is None:
+                        worker, parent_conn = _spawn_worker()
 
-                        byte_offset += len(raw)
+                    raw = f.read(CHUNK)
+                    if not raw:
+                        break
 
-                        if byte_offset % (500 * 1024 * 1024) == 0:
-                            pct = 100.0 * byte_offset / total_bytes
-                            print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
-                                  f"{total_tokens:,} tokens")
-                            out.flush()
+                    parent_conn.send(raw)
+                    result = parent_conn.recv()
+                    if result:
+                        out.write(result)
+                        total_tokens += len(result) // 4
+
+                    byte_offset += len(raw)
+                    chunk_count += 1
+
+                    # Recycle worker every 50 chunks to cap child RSS
+                    if chunk_count % CHUNKS_PER_WORKER == 0:
+                        parent_conn.send(None)
+                        worker.join(timeout=30)
+                        if worker.is_alive():
+                            worker.kill()
+                            worker.join()
+                        parent_conn.close()
+                        worker, parent_conn = None, None
+
+                    if byte_offset % (500 * 1024 * 1024) == 0:
+                        pct = 100.0 * byte_offset / total_bytes
+                        print(f"  [{pct:.0f}%] {byte_offset // (1024*1024):,} MB — "
+                              f"{total_tokens:,} tokens")
+                        out.flush()
         finally:
-            try:
-                parent_conn.send(None)
-            except (BrokenPipeError, EOFError):
-                pass
-            worker.join(timeout=30)
-            if worker.is_alive():
-                worker.kill()
-                worker.join()
-            parent_conn.close()
+            if worker is not None:
+                try:
+                    parent_conn.send(None)
+                except (BrokenPipeError, EOFError):
+                    pass
+                worker.join(timeout=30)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join()
+                parent_conn.close()
 
         # Build .npy header and prepend to the raw file
         print(f"[SpanishCorpus] Writing {total_tokens:,} tokens → {self.bpe_path} ...")
