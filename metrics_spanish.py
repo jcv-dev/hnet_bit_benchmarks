@@ -71,7 +71,7 @@ def compute_bpb(
         if attention_mask is not None:
             attention_mask = attention_mask.to(device)
 
-        with torch.amp.autocast("cuda", enabled=True, dtype=amp_dtype):
+        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available(), dtype=amp_dtype):
             outputs = model(
                 input_ids=input_ids,
                 labels=labels,

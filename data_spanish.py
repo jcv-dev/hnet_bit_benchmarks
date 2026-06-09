@@ -178,7 +178,11 @@ class SpanishCorpusBuilder:
         worker.start()
         child_conn.close()
 
-        total = parent_conn.recv()
+        try:
+            total = parent_conn.recv()
+        except EOFError:
+            worker.join()
+            raise RuntimeError(f"Byte corpus worker died (exit code {worker.exitcode})")
         worker.join()
         parent_conn.close()
 
@@ -220,6 +224,12 @@ class SpanishCorpusBuilder:
                         break
 
                     parent_conn.send(raw)
+                    if not parent_conn.poll(timeout=120):
+                        if not worker.is_alive():
+                            raise RuntimeError(
+                                f"BPE worker died (exit code {worker.exitcode})"
+                            )
+                        raise RuntimeError("BPE worker timed out")
                     result = parent_conn.recv()
                     if result:
                         out.write(result)
@@ -257,15 +267,15 @@ class SpanishCorpusBuilder:
 
         # Build .npy header and prepend to the raw file
         print(f"[SpanishCorpus] Writing {total_tokens:,} tokens → {self.bpe_path} ...")
-        header_dict = {"descr": "<i4", "fortran_order": False, "shape": (total_tokens,)}
-        import io
-        buf = io.BytesIO()
-        np.lib.format._write_array_header(buf, header_dict)
-        header_data = buf.getvalue()
+        # Manual .npy v1.0 header (avoids fragile numpy internals)
+        header_str = repr({"descr": "<i4", "fortran_order": False, "shape": (total_tokens,)})
+        header_bytes = header_str.encode("ascii")
+        padding = (16 - ((len(header_bytes) + 1) % 16)) % 16
+        header_bytes = header_bytes + b" " * padding + b"\n"
         with open(self.bpe_path, "wb") as npy_file:
             npy_file.write(b"\x93NUMPY\x01\x00")
-            npy_file.write(struct.pack("<H", len(header_data)))
-            npy_file.write(header_data)
+            npy_file.write(struct.pack("<H", len(header_bytes)))
+            npy_file.write(header_bytes)
             with open(raw_path, "rb") as raw_f:
                 while True:
                     buf = raw_f.read(64 * 1024 * 1024)

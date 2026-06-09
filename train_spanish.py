@@ -246,7 +246,7 @@ class SpanishTrainer:
 
                 # Log
                 if self.global_step % cfg.log_interval_steps == 0:
-                    lr = self.scheduler.get_last_lr()[0]
+                    lr = max(self.scheduler.get_last_lr())
                     elapsed = time.time() - t_start
                     tok_per_sec = self.tokens_seen / max(elapsed, 1)
                     
