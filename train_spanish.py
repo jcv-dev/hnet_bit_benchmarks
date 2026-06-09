@@ -256,7 +256,8 @@ class SpanishTrainer:
                         "loss": accum_loss,
                         "lr": lr,
                         "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                        "tok_per_sec": tok_per_sec
+                        "tok_per_sec": tok_per_sec,
+                        "peak_mem_mb": round(torch.cuda.max_memory_allocated() / (1024**2), 0) if torch.cuda.is_available() else 0,
                     }
                     # Average and log chunking stats for hybrid
                     if self._chunking_accum:
@@ -281,9 +282,11 @@ class SpanishTrainer:
                     if self.global_step % (cfg.log_interval_steps * 10) == 0:
                         self._save_train_log_csv()
 
+                    peak_mem = torch.cuda.max_memory_allocated() / (1024**2) if torch.cuda.is_available() else 0
                     print(f"step={self.global_step:>8,}  loss={accum_loss:.4f}  "
                           f"lr={lr:.2e}  grad_norm={grad_norm:.3f}  "
-                          f"bytes={self.tokens_seen:>14,}  tok/s={tok_per_sec:,.0f}")
+                          f"bytes={self.tokens_seen:>14,}  tok/s={tok_per_sec:,.0f}  "
+                          f"mem={peak_mem:,.0f}MB")
 
                 accum_loss = 0.0
 
