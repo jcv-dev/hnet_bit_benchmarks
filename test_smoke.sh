@@ -61,7 +61,7 @@ print(f'  Wrote {len(content)} bytes -> corpus.bin')
 # For transformer: delete stale BPE data and rebuild from current corpus
 if [[ " ${MODELS[*]} " == *" transformer "* ]]; then
     echo "--- Building BPE corpus for transformer ---"
-    rm -f "$DATA_DIR"/corpus_bpe.npy "$DATA_DIR"/byte2token_offsets.npy "$DATA_DIR"/corpus_meta.npz
+    rm -f "$DATA_DIR"/corpus_bpe.npy "$DATA_DIR"/corpus_meta.npz
     python3 -c "
 import numpy as np
 from pathlib import Path

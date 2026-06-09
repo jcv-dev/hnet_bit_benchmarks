@@ -89,7 +89,7 @@ class SpanishCorpusBuilder:
     def build_bpe(self, force: bool = False) -> Tuple[int, float]:
         """Build the BPE corpus (requires bytes corpus).  Returns (total_tokens, avg_bytes_per_token)."""
         assert self.byte_path.exists(), "Call build_bytes_only() first"
-        if not force and self.bpe_path.exists() and self.offset_path.exists():
+        if not force and self.bpe_path.exists():
             tokens = np.load(self.bpe_path, mmap_mode="r")
             total_bytes = self.byte_path.stat().st_size
             avg = total_bytes / max(len(tokens), 1)
@@ -135,52 +135,52 @@ class SpanishCorpusBuilder:
 
     def _write_bpe_corpus(self) -> Tuple[int, float]:
         from transformers import AutoTokenizer
+        import tempfile
 
         tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         total_bytes = self.byte_path.stat().st_size
 
-        # We tokenize in chunks to avoid loading the whole corpus into RAM
+        # We tokenize in chunks and write to a temporary binary file on disk
+        # instead of accumulating in memory (22B tokens x 4 bytes = 88 GB).
         CHUNK = 10 * 1024 * 1024  # 10 MB
-        all_token_ids: List[int] = []
-        byte2token: List[int] = []  # byte_offset → token_offset
+        total_tokens = 0
 
         print(f"[SpanishCorpus] Tokenizing {total_bytes:,} bytes with {self.tokenizer_name} ...")
 
-        byte_offset = 0
-        with open(self.byte_path, "rb") as f:
-            while True:
-                raw = f.read(CHUNK)
-                if not raw:
-                    break
-                text = raw.decode("utf-8", errors="replace")
-                tokens = tokenizer.encode(text, add_special_tokens=False)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+            byte_offset = 0
+            with open(self.byte_path, "rb") as f:
+                while True:
+                    raw = f.read(CHUNK)
+                    if not raw:
+                        break
+                    text = raw.decode("utf-8", errors="replace")
+                    tokens = tokenizer.encode(text, add_special_tokens=False)
+                    if tokens:
+                        tmp.write(np.array(tokens, dtype=np.int32).tobytes())
+                        total_tokens += len(tokens)
+                    byte_offset += len(raw)
 
-                # Build byte→token offset mapping for this chunk
-                # Approximate: evenly distribute bytes across tokens
-                if tokens:
-                    bytes_per_token = len(raw) / len(tokens)
-                    for j in range(len(raw)):
-                        byte2token.append(len(all_token_ids) + int(j / bytes_per_token))
+                    if byte_offset % (100 * 1024 * 1024) == 0:
+                        print(f"  Tokenized {byte_offset // (1024*1024):,} MB — "
+                              f"{total_tokens:,} tokens")
 
-                all_token_ids.extend(tokens)
-                byte_offset += len(raw)
-
-                if byte_offset % (100 * 1024 * 1024) == 0:
-                    print(f"  Tokenized {byte_offset // (1024*1024):,} MB — "
-                          f"{len(all_token_ids):,} tokens")
-
-        # Save
-        token_arr = np.array(all_token_ids, dtype=np.int32)
+        # Load from temp file into numpy array and save as .npy
+        token_arr = np.fromfile(tmp_path, dtype=np.int32)
+        os.unlink(tmp_path)
         np.save(self.bpe_path, token_arr)
 
-        offset_arr = np.array(byte2token, dtype=np.int64)
-        np.save(self.offset_path, offset_arr)
+        # byte2token offset mapping is no longer built — it was not consumed
+        # anywhere except for the existence check at line 92 (removed).
 
-        avg = total_bytes / max(len(all_token_ids), 1)
-        print(f"[SpanishCorpus] Wrote {len(all_token_ids):,} tokens → {self.bpe_path}")
-        print(f"  Average bytes per token: {avg:.2f}")
+        avg = total_bytes / max(total_tokens, 1)
+        total_bytes_on_disk = token_arr.nbytes
+        print(f"[SpanishCorpus] Wrote {total_tokens:,} tokens → {self.bpe_path}")
+        print(f"  Disk: {total_bytes_on_disk / 1024**3:.1f} GB  "
+              f"Average bytes per token: {avg:.2f}")
 
-        return len(all_token_ids), avg
+        return total_tokens, avg
 
 
 # --------------------------------------------------------------------------
