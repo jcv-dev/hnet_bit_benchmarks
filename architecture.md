@@ -293,7 +293,7 @@ This stabilizes the input distribution before the harsh quantization.
 
 ---
 
-## 5. The Recurrence Engine — HGRN
+## 6. The Recurrence Engine — HGRN
 
 **Files**: `ops/hgrn/recurrent_fuse.py`, `ops/hgrn/chunk.py`
 
@@ -304,7 +304,7 @@ $$h_t = f_t \cdot h_{t-1} + i_t$$
 where:
 - $h_t \in \mathbb{R}^d$ is the hidden state at time $t$
 - $f_t \in (0, 1)^d$ is the **forget gate** (element-wise)
-- $i_t \in \mathbb{R}^d$ is the **input** (already gated — see Section 6)
+- $i_t \in \mathbb{R}^d$ is the **input** (already gated — see Section 7)
 
 ### 6.1 Why Not Attention?
 
@@ -327,7 +327,7 @@ The dispatcher checks `x.is_cuda` and selects the appropriate backend automatica
 
 ---
 
-## 6. Activations — SwiGLU and FusedRMSNormSwishGate
+## 7. Activations — SwiGLU and FusedRMSNormSwishGate
 
 ### 7.1 SwiGLU
 
@@ -579,7 +579,7 @@ The purpose is to provide gradient signal to the routing module (which makes har
 
 ---
 
-## 11. End-to-End Forward Pass (Training)
+## 12. End-to-End Forward Pass (Training)
 
 For a 2-stage model with `d_model = [512, 768, 1024]`, `num_blocks = [[4,0,4], [4,0,4], [8]]`:
 
@@ -633,7 +633,7 @@ This aggressive reduction means the expensive inner stages process very short se
 
 ---
 
-## 12. Autoregressive Generation (Inference)
+## 13. Autoregressive Generation (Inference)
 
 During generation, the model processes **one token at a time** using cached recurrent states.
 
@@ -675,7 +675,7 @@ For each new token:
 
 ---
 
-## 13. Configuration Presets
+## 14. Configuration Presets
 
 ### `tiny` (~259K parameters)
 ```json
@@ -737,7 +737,7 @@ An additional `hybrid_attn` model type is available that uses the same configs a
 
 ---
 
-## 14. Parameter Efficiency and the MatMul-Free Property
+## 15. Parameter Efficiency and the MatMul-Free Property
 
 ### 15.1 What is "MatMul-Free"?
 
@@ -762,7 +762,7 @@ Not everything is ternary. The following components use full precision:
 
 All of these are either small (1D parameters) or critical for numerical stability.
 
-### 14.3 What Replaces Self-Attention
+### 15.3 What Replaces Self-Attention
 
 | Standard Transformer | HNetBit Equivalent |
 |---|---|
@@ -773,7 +773,7 @@ All of these are either small (1D parameters) or critical for numerical stabilit
 
 ---
 
-## 15. File Map
+## 16. File Map
 
 ### HNetBit model implementation (`hnet_bit/`)
 

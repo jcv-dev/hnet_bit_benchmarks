@@ -130,11 +130,11 @@ python train_spanish.py --model hybrid --size 150M --max_steps 1 --batch_size 1
 python train_spanish.py --model transformer --size 150M --max_steps 1 --batch_size 1
 ```
 
-This downloads ~1.5 GB of text from HuggingFace and tokenizes it. The data caches to `./data/spanish/` and subsequent runs use the cache automatically with `--skip_data_build`.
+This downloads ~1.5 GB of compressed text from HuggingFace, which expands to ~8.7 GB of raw text. The data caches to `./data/spanish/` and subsequent runs use the cache automatically with `--skip_data_build`.
 
 ## 7. Run the benchmark
 
-Each training run takes 20-200 hours. Use `tmux` to keep runs alive across SSH disconnects.
+Each training run takes approximately 80-200 hours depending on model size and architecture. Use `tmux` to keep runs alive across SSH disconnects.
 
 ### Using tmux (recommended over nohup)
 
@@ -200,7 +200,7 @@ rm -rf runs/spanish/*
 
 ### Tier 1: 150M (4 runs)
 
-Run on a single A100. Estimated time: ~120 hours total (sequential) or ~40 hours (parallel).
+Run on a single A100. Estimated time: ~350 hours total (sequential) or ~120 hours (concurrent — one per session, all sharing the GPU). Memory consumption is ~15-18 GB per model at 150M tier, well within the 80 GB available on an A100.
 
 ```bash
 rm -rf runs/spanish/*
@@ -225,7 +225,7 @@ This writes `results_150M.csv` with only the 150M rows. It is read-only on the p
 
 ### Tier 2: 350M (3 runs: hybrid, transformer, matmulfree)
 
-No hybrid_attn at 350M (the attention ablation is only run at 150M).
+No hybrid_attn at 350M (the attention ablation is only run at 150M). Estimated time: ~300-400 hours (sequential).
 
 ```bash
 tmux new -s hybrid_350M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 350M'

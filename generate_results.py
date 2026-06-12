@@ -30,6 +30,7 @@ if str(_ROOT) not in sys.path:
 from model_factory import build_model
 from data_spanish import create_dataloaders
 from metrics_spanish import compute_bpb, measure_inference_memory
+from export_deployment import export_model
 
 
 def _safe_float(val, default=""):
@@ -37,6 +38,38 @@ def _safe_float(val, default=""):
         return round(float(val), 4)
     except (ValueError, TypeError):
         return default
+
+
+def _get_deploy_stats(checkpoint_path: str) -> dict:
+    """
+    Auto-export a checkpoint to compact ternary weights if not already done.
+
+    Returns a dict with keys Deploy_Size_MB and Bits_Per_Param, or empty
+    values on failure.
+    """
+    ckpt_path = Path(checkpoint_path)
+    export_path = ckpt_path.parent / "model_deploy.pt"
+
+    if export_path.exists():
+        size_mb = export_path.stat().st_size / (1024 ** 2)
+        bpp = ""
+        try:
+            data = torch.load(export_path, map_location="cpu", weights_only=False)
+            exp_stats = data.get("export_stats", {})
+            bpp = exp_stats.get("bits_per_param", "")
+        except Exception:
+            pass
+        return {"Deploy_Size_MB": round(size_mb, 1), "Bits_Per_Param": bpp}
+
+    try:
+        stats = export_model(str(ckpt_path), str(export_path), verify=False)
+        return {
+            "Deploy_Size_MB": stats.get("export_size_mb", ""),
+            "Bits_Per_Param": stats.get("bits_per_param", ""),
+        }
+    except Exception as e:
+        print(f"  Export skipped for {ckpt_path.name}: {e}")
+        return {"Deploy_Size_MB": "", "Bits_Per_Param": ""}
 
 
 def collect_existing_results(runs_dir: str) -> list[dict]:
@@ -158,6 +191,15 @@ def collect_existing_results(runs_dir: str) -> list[dict]:
                     except Exception:
                         pass
 
+                # ── deployment export ───────────────────────────────────
+                row.update({"Deploy_Size_MB": "", "Bits_Per_Param": ""})
+                ckpt_path = model_run_dir / "checkpoint_final.pt"
+                ckpt_path_best = model_run_dir / "checkpoint_best.pt"
+                source_ckpt = ckpt_path if ckpt_path.exists() else ckpt_path_best
+                if source_ckpt.exists():
+                    deploy = _get_deploy_stats(str(source_ckpt))
+                    row.update(deploy)
+
                 all_results.append(row)
 
     return all_results
@@ -257,6 +299,10 @@ def reevaluate_checkpoints(
             except Exception:
                 pass
 
+        # Deployment export
+        deploy = _get_deploy_stats(str(ckpt_path))
+        result.update({k: v for k, v in deploy.items() if k not in result or not result.get(k)})
+
         all_results.append(result)
 
         print(f"  BPB              : {result['BPB']:.4f}")
@@ -285,6 +331,7 @@ def save_results(results: list[dict], output_path: str) -> None:
         "Inference_Memory_MB",
         # Model stats
         "Param_Count_M", "Non_Emb_Params_M", "Disk_Size_MB",
+        "Deploy_Size_MB", "Bits_Per_Param",
         "Peak_Training_Memory_MB", "Peak_Reserved_Memory_MB",
         "Overall_Compression_Ratio",
         # Training stats
@@ -308,7 +355,7 @@ def save_results(results: list[dict], output_path: str) -> None:
     # Print concise summary table
     print(f"\n{'='*170}")
     print(f"{'Model':<15} {'Size':<8} {'Params M':<9} {'NonEmb M':<9} {'BPB':<8} {'Loss':<8} "
-          f"{'Train Mem':<10} {'Disk MB':<8} {'Compress':<9} {'Tok/s':<8} {'Hours':<8}")
+          f"{'Train Mem':<10} {'Disk MB':<8} {'Deploy MB':<10} {'Bits/par':<9} {'Compress':<9} {'Tok/s':<8} {'Hours':<8}")
     print(f"{'-'*170}")
     for r in results:
         print(
@@ -319,11 +366,13 @@ def save_results(results: list[dict], output_path: str) -> None:
             f"{str(r.get('Best_Val_Loss', '')):<8} "
             f"{str(r.get('Peak_Training_Memory_MB','')):<10} "
             f"{str(r.get('Disk_Size_MB','')):<8} "
+            f"{str(r.get('Deploy_Size_MB','')):<10} "
+            f"{str(r.get('Bits_Per_Param','')):<9} "
             f"{str(r.get('Overall_Compression_Ratio','')):<9} "
             f"{str(r.get('Peak_Tok_Per_Sec','')):<8} "
             f"{str(r.get('Training_Time_Hours','')):<8}"
         )
-    print(f"{'='*160}")
+    print(f"{'='*170}")
     print(f"\nFull results saved to: {output_path}")
     print(f"Columns: {', '.join(present_keys)}")
 

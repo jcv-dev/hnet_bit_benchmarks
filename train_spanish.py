@@ -96,7 +96,7 @@ class SpanishTrainer:
 
         # State
         self.global_step = 0
-        self.tokens_seen = 0
+        self.bytes_seen = 0
         self.best_val_bpb = float("inf")
         self.training_start_time = None
 
@@ -242,17 +242,17 @@ class SpanishTrainer:
                 self.scheduler.step()
 
                 self.global_step += 1
-                self.tokens_seen += cfg.bytes_per_step
+                self.bytes_seen += cfg.bytes_per_step
 
                 # Log
                 if self.global_step % cfg.log_interval_steps == 0:
                     lr = max(self.scheduler.get_last_lr())
                     elapsed = time.time() - t_start
-                    tok_per_sec = self.tokens_seen / max(elapsed, 1)
+                    tok_per_sec = self.bytes_seen / max(elapsed, 1)
                     
                     train_entry = {
                         "step": self.global_step,
-                        "bytes_seen": self.tokens_seen,
+                        "bytes_seen": self.bytes_seen,
                         "loss": accum_loss,
                         "lr": lr,
                         "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
@@ -285,7 +285,7 @@ class SpanishTrainer:
                     peak_mem = torch.cuda.max_memory_allocated() / (1024**2) if torch.cuda.is_available() else 0
                     print(f"step={self.global_step:>8,}  loss={accum_loss:.4f}  "
                           f"lr={lr:.2e}  grad_norm={grad_norm:.3f}  "
-                          f"bytes={self.tokens_seen:>14,}  tok/s={tok_per_sec:,.0f}  "
+                          f"bytes={self.bytes_seen:>14,}  tok/s={tok_per_sec:,.0f}  "
                           f"mem={peak_mem:,.0f}MB")
 
                 accum_loss = 0.0
@@ -301,9 +301,9 @@ class SpanishTrainer:
 
                 # Milestone checkpoints
                 for milestone in list(self._milestone_set - self._passed_milestones):
-                    if self.tokens_seen >= milestone:
+                    if self.bytes_seen >= milestone:
                         self._passed_milestones.add(milestone)
-                        ms_label = f"{milestone // 1_000_000_000}B"
+                        ms_label = f"{milestone / 1_000_000_000:.2f}B"
                         print(f"\n*** Milestone: {ms_label} bytes reached ***")
                         self._evaluate_and_log()
                         self._save_checkpoint(f"milestone_{ms_label}")
@@ -327,7 +327,7 @@ class SpanishTrainer:
             "training_time_seconds": training_elapsed,
             "training_time_hours": training_elapsed / 3600,
             "total_steps": self.global_step,
-            "bytes_seen": self.tokens_seen,
+            "bytes_seen": self.bytes_seen,
             "param_count": self.param_count,
             "trainable_param_count": self.trainable_param_count,
             "non_embedding_param_count": self.non_embedding_param_count,
@@ -345,7 +345,7 @@ class SpanishTrainer:
         self._save_train_log_csv()
 
         print(f"\nTraining complete. Best val BPB: {self.best_val_bpb:.4f}")
-        print(f"Results saved to {self.output_dir / 'results.csv'}")
+        print(f"Results saved to {self.output_dir / 'validation_log.csv'}")
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -369,7 +369,7 @@ class SpanishTrainer:
 
         entry = {
             "step": self.global_step,
-            "bytes_seen": self.tokens_seen,
+            "bytes_seen": self.bytes_seen,
             "val_loss": val_loss,
             "val_bpb": bpb,
         }
@@ -390,7 +390,7 @@ class SpanishTrainer:
             "scheduler_state_dict": self.scheduler.state_dict(),
             "scaler_state_dict": self.scaler.state_dict(),
             "global_step": self.global_step,
-            "tokens_seen": self.tokens_seen,
+            "bytes_seen": self.bytes_seen,
             "best_val_bpb": self.best_val_bpb,
             "config": {k: v for k, v in self.config.__dict__.items()
                        if not k.startswith("_") and not callable(v)},
@@ -568,8 +568,8 @@ def parse_args() -> argparse.Namespace:
                         help="Gradient accumulation steps")
     parser.add_argument("--max_steps", type=int, default=None,
                         help="Override max training steps (for debugging)")
-    parser.add_argument("--total_tokens", type=int, default=None,
-                        help="Total tokens to train on")
+    parser.add_argument("--total_bytes", type=int, default=None,
+                        help="Total bytes of underlying text to train on")
     parser.add_argument("--bf16", action="store_true", default=True)
     parser.add_argument("--fp16", action="store_true", default=False)
     parser.add_argument("--no_bf16", action="store_true", default=False,
@@ -621,8 +621,8 @@ def main():
         config.batch_size = args.batch_size
     if args.grad_accum is not None:
         config.gradient_accumulation_steps = args.grad_accum
-    if args.total_tokens is not None:
-        config.total_training_bytes = args.total_tokens
+    if args.total_bytes is not None:
+        config.total_training_bytes = args.total_bytes
     if args.no_bf16:
         config.bf16 = False
     if args.fp16:

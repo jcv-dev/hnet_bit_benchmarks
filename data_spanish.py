@@ -85,7 +85,7 @@ def _byte_corpus_worker(conn, cache_dir, hf_dataset, max_samples):
 
 class SpanishCorpusBuilder:
     """
-    Downloads the ``crscardellino/spanish_billion_words`` dataset from
+    Downloads the ``jhonparra18/spanish_billion_words_clean`` dataset from
     HuggingFace and writes two persistent files:
 
     - ``corpus.bin``          — raw UTF‑8 bytes (flat binary)
@@ -421,8 +421,8 @@ def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
 def create_dataloaders(
     model_name: str,
     cache_dir: str = "./data/spanish",
-    byte_seq_length: int = 8192,
-    token_seq_length: int = 1792,
+    byte_seq_length: int = 4096,
+    token_seq_length: int = 1280,
     batch_size: int = 4,
     num_workers: int = 2,
     val_ratio: float = 0.05,
