@@ -27,6 +27,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+from hnet_bit.ops.bitnet import pack_ternary_tensor
+
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -124,9 +126,16 @@ def export_model(
     )
     fp16_size_mb = param_count * 2 / (1024 ** 2)
 
-    # Save pre-freeze state for verification
+    # Determine device for verification
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Save pre-freeze state on CPU before any device move
     if verify:
         pre_freeze_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+    # Move to GPU so short_conv (causal conv) works correctly
+    if device == "cuda":
+        model = model.to(device)
 
     frozen = freeze_ternary_weights(model)
 
@@ -139,14 +148,11 @@ def export_model(
     for name, param in model.named_parameters():
         n = param.numel()
         module = None
-        # Walk to find the owning module
         for m_name, m_module in _find_bitlinear_modules(model):
             if f"{m_name}.weight" == name:
                 module = m_module
                 break
         if module is not None:
-            # Ternary: need 2 bits per nonzero + scale (float32 per tensor)
-            # Conservative: count 2 bits per element + 32 bits for scale
             total_bits += n * 2 + 32
         else:
             total_bits += n * 32
@@ -158,9 +164,44 @@ def export_model(
         output_dir = os.path.dirname(checkpoint_path)
         output_path = os.path.join(output_dir, "model_deploy.pt")
 
-    # Save once without stats to measure exact file size, then resave with accurate metadata
+    # Verify forward pass matches
+    if verify:
+        print("  Verifying forward pass...")
+        model.eval()
+        x = torch.randint(0, min(vocab_size, 256), (1, 64), device=device)
+        with torch.no_grad():
+            out_frozen = model(input_ids=x)
+            frozen_logits = out_frozen.logits if hasattr(out_frozen, "logits") else out_frozen[0]
+
+        model.load_state_dict(pre_freeze_state)
+        model.eval()
+        with torch.no_grad():
+            out_orig = model(input_ids=x)
+            orig_logits = out_orig.logits if hasattr(out_orig, "logits") else out_orig[0]
+
+        max_diff = (frozen_logits - orig_logits).abs().max().item()
+        if max_diff < 1e-5:
+            print(f"  VERIFIED: max logit diff = {max_diff:.2e} (OK)")
+        else:
+            print(f"  WARNING: max logit diff = {max_diff:.2e} (may indicate issue)")
+
+        freeze_ternary_weights(model)
+
+    # Move back to CPU for packing and saving
+    model = model.cpu()
+
+    # Build packed state dict: separate BitLinear weights → packed format
+    full_sd = model.state_dict()
+    packed_weights = {}
+    for module_name, module in _find_bitlinear_modules(model):
+        weight_key = f"{module_name}.weight"
+        if weight_key in full_sd:
+            packed_weights[weight_key] = pack_ternary_tensor(full_sd.pop(weight_key))
+
+    # Save once without stats to measure exact file size, then resave with stats
     export_state = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": full_sd,
+        "packed_weights": packed_weights,
         "model_config": {
             "model_name": model_name,
             "model_size": model_size,
@@ -196,33 +237,39 @@ def export_model(
         "frozen_layers": frozen,
         "output_path": output_path,
     }
-
-    # Verify forward pass matches
-    if verify:
-        print("  Verifying forward pass...")
-        model.eval()
-        x = torch.randint(0, min(vocab_size, 256), (1, 64))
-        with torch.no_grad():
-            out_frozen = model(input_ids=x)
-            frozen_logits = out_frozen.logits if hasattr(out_frozen, "logits") else out_frozen[0]
-
-        # Reload pre-freeze state
-        model.load_state_dict(pre_freeze_state)
-        model.eval()
-        with torch.no_grad():
-            out_orig = model(input_ids=x)
-            orig_logits = out_orig.logits if hasattr(out_orig, "logits") else out_orig[0]
-
-        max_diff = (frozen_logits - orig_logits).abs().max().item()
-        if max_diff < 1e-5:
-            print(f"  VERIFIED: max logit diff = {max_diff:.2e} (OK)")
-        else:
-            print(f"  WARNING: max logit diff = {max_diff:.2e} (may indicate issue)")
-
-        # Reload frozen weights for final export
-        model.load_state_dict(export_state["model_state_dict"])
-
     return stats
+
+
+def load_deploy_model(export_path: str, device: str = "cpu") -> nn.Module:
+    """
+    Load a model from a compact deployment export file.
+
+    Automatically unpacks ternary weights (packed at ~2 bits/param).
+    Handles both the new packed format and legacy unpacked exports.
+
+    Args:
+        export_path: Path to the export file (model_deploy.pt).
+        device: Device to place the model on ("cpu" or "cuda").
+
+    Returns:
+        Model with all weights loaded (ternary weights unpacked to float32).
+    """
+    from model_factory import build_model
+    from hnet_bit.ops.bitnet import unpack_ternary_tensor
+
+    data = torch.load(export_path, map_location="cpu", weights_only=False)
+    cfg = data["model_config"]
+    model, _, _ = build_model(cfg["model_name"], cfg["model_size"])
+
+    full_sd = dict(data["model_state_dict"])
+    if "packed_weights" in data:
+        for key, packed in data["packed_weights"].items():
+            full_sd[key] = unpack_ternary_tensor(packed)
+
+    model.load_state_dict(full_sd)
+    model = model.to(device)
+    model.eval()
+    return model
 
 
 def print_report(stats: dict) -> None:

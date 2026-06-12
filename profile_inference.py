@@ -51,7 +51,14 @@ def load_model_from_source(
         model_name = cfg.get("model_name", "hybrid")
         model_size = cfg.get("model_size", "150M")
         model, is_byte_level, vocab_size = build_model(model_name, model_size)
-        model.load_state_dict(data["model_state_dict"])
+        if "packed_weights" in data:
+            from hnet_bit.ops.bitnet import unpack_ternary_tensor
+            full_sd = dict(data["model_state_dict"])
+            for key, packed in data["packed_weights"].items():
+                full_sd[key] = unpack_ternary_tensor(packed)
+            model.load_state_dict(full_sd)
+        else:
+            model.load_state_dict(data["model_state_dict"])
     elif checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Loading from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
