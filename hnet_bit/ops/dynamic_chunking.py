@@ -168,6 +168,17 @@ class RoutingModuleBit(nn.Module):
         # Update inference state during prefill
         if inference_params is not None:
             has_mask = mask.any(dim=-1)
+            # Resize routing state to match current batch (HF prefill may change it)
+            B = has_mask.shape[0]
+            if inference_params.has_seen_tokens.shape[0] != B:
+                device = has_mask.device
+                dtype = inference_params.last_hidden_state.dtype
+                inference_params.has_seen_tokens = torch.zeros(
+                    B, device=device, dtype=torch.bool,
+                )
+                inference_params.last_hidden_state = torch.zeros(
+                    B, self.d_model, device=device, dtype=dtype,
+                )
             inference_params.has_seen_tokens.copy_(
                 has_mask | inference_params.has_seen_tokens
             )
@@ -209,7 +220,19 @@ class RoutingModuleBit(nn.Module):
             RoutingModuleOutput for current step
         """
         hidden_states_squeezed = hidden_states.squeeze(1)  # (B, D)
-        
+        B = hidden_states_squeezed.shape[0]
+
+        # Resize routing state to match current batch if needed
+        if inference_params.has_seen_tokens.shape[0] != B:
+            device = hidden_states_squeezed.device
+            inference_params.has_seen_tokens = torch.zeros(
+                B, device=device, dtype=torch.bool,
+            )
+            inference_params.last_hidden_state = torch.zeros(
+                B, self.d_model, device=device,
+                dtype=inference_params.last_hidden_state.dtype,
+            )
+
         # Cosine similarity with last token (FP32 for stability)
         q = F.normalize(self.q_proj_layer(inference_params.last_hidden_state).float(), dim=-1)
         k = F.normalize(self.k_proj_layer(hidden_states_squeezed).float(), dim=-1)
