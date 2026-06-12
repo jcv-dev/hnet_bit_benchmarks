@@ -88,7 +88,8 @@ def _timed_forward(model, input_ids, attention_mask=None, warmup=3, runs=5):
     use_cuda = input_ids.device.type == "cuda"
 
     for _ in range(warmup):
-        _ = model(input_ids=input_ids, attention_mask=attention_mask)
+        with torch.no_grad():
+            _ = model(input_ids=input_ids, attention_mask=attention_mask)
     if use_cuda:
         torch.cuda.synchronize()
 
@@ -97,14 +98,16 @@ def _timed_forward(model, input_ids, attention_mask=None, warmup=3, runs=5):
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         for _ in range(runs):
-            _ = model(input_ids=input_ids, attention_mask=attention_mask)
+            with torch.no_grad():
+                _ = model(input_ids=input_ids, attention_mask=attention_mask)
         end.record()
         torch.cuda.synchronize()
         elapsed_ms = start.elapsed_time(end) / runs
     else:
         t0 = time.time()
         for _ in range(runs):
-            _ = model(input_ids=input_ids, attention_mask=attention_mask)
+            with torch.no_grad():
+                _ = model(input_ids=input_ids, attention_mask=attention_mask)
         elapsed_ms = (time.time() - t0) / runs * 1000
 
     return elapsed_ms
