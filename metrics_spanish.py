@@ -146,14 +146,16 @@ def measure_inference_memory(
 
     # Warmup passes (to prime CUDA allocator / JIT caches)
     for _ in range(warmup_runs):
-        _ = model(input_ids=input_ids)
+        with torch.no_grad():
+            _ = model(input_ids=input_ids)
 
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.empty_cache()
 
     # Measured forward pass
-    _ = model(input_ids=input_ids)
+    with torch.no_grad():
+        _ = model(input_ids=input_ids)
     torch.cuda.synchronize()
 
     peak_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
