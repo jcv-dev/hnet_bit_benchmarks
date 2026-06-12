@@ -129,11 +129,7 @@ def export_model(
     # Determine device for verification
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Save pre-freeze state on CPU before any device move
-    if verify:
-        pre_freeze_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-    # Move to GPU so short_conv (causal conv) works correctly
+    # Move to GPU so short_conv (causal conv) is available
     if device == "cuda":
         model = model.to(device)
 
@@ -164,28 +160,37 @@ def export_model(
         output_dir = os.path.dirname(checkpoint_path)
         output_path = os.path.join(output_dir, "model_deploy.pt")
 
-    # Verify forward pass matches
+    # Verify pack→unpack roundtrip is lossless
     if verify:
-        print("  Verifying forward pass...")
+        from hnet_bit.ops.bitnet import unpack_ternary_tensor
+
+        print("  Verifying forward pass roundtrip...")
+        frozen_sd = model.state_dict()
+        rt_weights = {}
+        for m_name, m_module in _find_bitlinear_modules(model):
+            wk = f"{m_name}.weight"
+            if wk in frozen_sd:
+                rt_weights[wk] = unpack_ternary_tensor(pack_ternary_tensor(frozen_sd[wk]))
+
         model.eval()
         x = torch.randint(0, min(vocab_size, 256), (1, 64), device=device)
         with torch.no_grad():
             out_frozen = model(input_ids=x)
             frozen_logits = out_frozen.logits if hasattr(out_frozen, "logits") else out_frozen[0]
 
-        model.load_state_dict(pre_freeze_state)
+        for wk, t in rt_weights.items():
+            model.get_parameter(wk).data.copy_(t)
+
         model.eval()
         with torch.no_grad():
-            out_orig = model(input_ids=x)
-            orig_logits = out_orig.logits if hasattr(out_orig, "logits") else out_orig[0]
+            out_rt = model(input_ids=x)
+            rt_logits = out_rt.logits if hasattr(out_rt, "logits") else out_rt[0]
 
-        max_diff = (frozen_logits - orig_logits).abs().max().item()
+        max_diff = (frozen_logits - rt_logits).abs().max().item()
         if max_diff < 1e-5:
             print(f"  VERIFIED: max logit diff = {max_diff:.2e} (OK)")
         else:
             print(f"  WARNING: max logit diff = {max_diff:.2e} (may indicate issue)")
-
-        freeze_ternary_weights(model)
 
     # Move back to CPU for packing and saving
     model = model.cpu()
@@ -193,10 +198,10 @@ def export_model(
     # Build packed state dict: separate BitLinear weights → packed format
     full_sd = model.state_dict()
     packed_weights = {}
-    for module_name, module in _find_bitlinear_modules(model):
-        weight_key = f"{module_name}.weight"
-        if weight_key in full_sd:
-            packed_weights[weight_key] = pack_ternary_tensor(full_sd.pop(weight_key))
+    bitlinear_keys = {f"{m_name}.weight" for m_name, _ in _find_bitlinear_modules(model)}
+    for key in list(full_sd.keys()):
+        if key in bitlinear_keys:
+            packed_weights[key] = pack_ternary_tensor(full_sd.pop(key))
 
     # Save once without stats to measure exact file size, then resave with stats
     export_state = {
