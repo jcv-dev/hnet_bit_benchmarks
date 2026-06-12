@@ -493,6 +493,11 @@ class DeChunkLayer(nn.Module):
         )  # (B, L, D)
 
         if inference_params is not None:
+            B = out.shape[0]
+            if inference_params.last_value.shape[0] != B:
+                inference_params.last_value = torch.zeros(
+                    B, self.d_model, device=out.device, dtype=out.dtype,
+                )
             inference_params.last_value.copy_(out[:, -1].to(original_dtype))
 
         return out.to(original_dtype)
@@ -530,6 +535,10 @@ class DeChunkLayer(nn.Module):
 
         result = p.unsqueeze(-1) * current_hidden_states + \
                  (1 - p.unsqueeze(-1)) * inference_params.last_value
+        if inference_params.last_value.shape[0] != result.shape[0]:
+            inference_params.last_value = torch.zeros(
+                result.shape[0], D, device=device, dtype=dtype,
+            )
         inference_params.last_value.copy_(result)
 
         return result.unsqueeze(1)
