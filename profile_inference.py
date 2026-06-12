@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -205,6 +206,7 @@ def measure_decode(
 
         except Exception as e:
             print(f"  batch={bs:>2}  ERROR: {e}")
+            traceback.print_exc()
             results[f"batch_{bs}"] = {"tok_per_sec": 0, "error": str(e)}
 
     return results
