@@ -92,6 +92,7 @@ class HNetBitCache:
         dechunk_state: DeChunk EMA state (None if innermost)
         decoder_cache: Cache for decoder HGRN blocks (None if innermost)
         is_innermost: Whether this is the innermost hierarchy level
+        is_compileable: Whether the cache supports torch.compile (always False)
     """
     encoder_cache: Optional[HGRNBlockCache] = None
     routing_state: Optional[RoutingModuleState] = None
@@ -99,6 +100,7 @@ class HNetBitCache:
     dechunk_state: Optional[DeChunkState] = None
     decoder_cache: Optional[HGRNBlockCache] = None
     is_innermost: bool = False
+    is_compileable: bool = False
 
     def get_seq_length(self) -> int:
         """Get the number of tokens processed at the outermost stage."""

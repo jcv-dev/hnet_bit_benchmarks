@@ -158,7 +158,7 @@ def measure_decode(
             _ = model.generate(
                 input_ids, attention_mask=attention_mask,
                 max_new_tokens=16, do_sample=False, pad_token_id=0,
-                eos_token_id=-1, use_cache=True,
+                eos_token_id=None, use_cache=True,
             )
             if device == "cuda":
                 torch.cuda.synchronize()
@@ -174,7 +174,7 @@ def measure_decode(
             output_ids = model.generate(
                 input_ids, attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=0,
-                eos_token_id=-1, use_cache=True,
+                eos_token_id=None, use_cache=True,
             )
 
             if device == "cuda":
