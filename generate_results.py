@@ -219,13 +219,23 @@ def reevaluate_checkpoints(
     device: str = "cuda",
 ) -> list[dict]:
     """
-    Find all ``checkpoint_final.pt`` files under *runs_dir*, rebuild the
-    corresponding model, load weights, and compute metrics fresh.
+    Re-evaluate all runs under *runs_dir* by loading checkpoints and running
+    fresh inference. Prefers ``checkpoint_best.pt`` over ``checkpoint_final.pt``.
     """
     runs = Path(runs_dir)
     all_results = []
 
-    for ckpt_path in sorted(runs.rglob("checkpoint_final.pt")):
+    for run_dir in sorted(runs.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        ckpt_path = None
+        for name in ("checkpoint_best.pt", "checkpoint_final.pt"):
+            candidate = run_dir / name
+            if candidate.exists():
+                ckpt_path = candidate
+                break
+        if ckpt_path is None:
+            continue
         # Infer model_name and size from directory name <model>_<size>
         dir_name = ckpt_path.parent.name  # e.g. "hybrid_350M"
         parts = dir_name.rsplit("_", 1)

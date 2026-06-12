@@ -84,6 +84,7 @@ Non-embedding params exclude lookup tables (embedding + LM head). Transformer ha
 - **max_position_embeddings**: transformer tiny config had 256 which conflicted with DataLoader's 1792-token sequences. Fixed to 2048. Real sizes (150M+) already use 2048.
 - **Transformer embedding overhead**: 50K vocab x hidden_size x 2 (embed + lm_head) is ~77M params at 150M that contribute zero FLOPs. Track `Non_Emb_Params_M` for fair comparison.
 - **Gradient checkpointing**: HNetBitForCausalLM is not HF-compatible. GC is functional for matmulfree and transformer, but the hybrid/hybrid_attn forward methods do not wrap layers with `torch.utils.checkpoint`. The `enable_gradient_checkpointing()` call sets the flag but it is never read by HNetBit's forward pass. Hybrid models train without activation recomputation — document this in training methodology comparisons.
+- **Training time implications of no gradient checkpointing**: Hybrid 150M takes ~80 hours (3.4 days) on a single GPU. The transformer will be faster because (1) it has fewer total steps (smaller training budget per byte×step due to BPE packing), (2) gradient checkpointing works, reducing per-step computation by allowing larger batch sizes and (3) its forward pass is purely attention+MLP without hierarchical chunking overhead. Peak training memory for hybrid 150M is ~15.5 GB (no GC + hierarchical chunking buffers for each stage). The transformer at similar size should be ~6-8 GB.
 
 ## Methodology
 
@@ -137,7 +138,27 @@ Lower is better. Validation BPB is computed every 1,000 steps over 50 batches (~
 **Inference throughput** — secondary metric. Measured via `profile_inference.py`:
 - Prefill (Time-To-First-Token): single forward pass at seq lengths 512/1024/2048/4096, 3 warmup + 5 timed runs, CUDA event timing
 - Decode: greedy autoregressive generation of 256 tokens from a 256-token prompt, at batch sizes 1/4/8
-- Memory: `torch.cuda.max_memory_allocated()` during generation
+- Memory: `torch.cuda.max_memory_allocated()` during generation; uses `torch.no_grad()` to avoid building autograd graphs (critical — without it, all intermediate activations are retained, inflating memory 3-5× for hierarchical models)
+
+### Inference memory behaviour
+
+- **Prefill memory**: Stays near-constant across context lengths (~600-800 MB for 150M hybrid) — the recurrent architecture has no KV cache, so memory does not grow with sequence length. The small variation is from activation buffer sizes.
+- **Decode memory**: Nearly flat across batch sizes (e.g. 573 MB at batch 1 → 652 MB at batch 8). Compare to a transformer where every new batch entry adds a separate KV cache.
+- **Why the numbers are low**:
+  1. Ternary weights pack to ~2 bits/param, so the model's weight memory in the deploy export is ~40 MB for 150M params (unpacked to FP32 during inference, still only ~550 MB)
+  2. No autograd graph (`torch.no_grad()`) — intermediate buffers freed immediately
+  3. RNN-like recurrence means no quadratic attention memory
+
+### Understanding the compression columns in results.csv
+
+The CSV has two compression-related columns that are often confused:
+
+| Column | What it measures | Hybrid 150M value |
+|---|---|---|
+| `Overall_Compression_Ratio` | **Training sparsity** — fraction of ternary weights that are non-zero during training (stored in `training_stats.json`). This is NOT the compression you get on disk. A value of ~0.31 means ~31% of ternary weights are non-zero on average. | ~0.31 |
+| `Deploy_Size_MB` / `Bits_Per_Param` | **Actual deployment compression** — the size of `model_deploy.pt` on disk after 2-bit packing. The real compression ratio is `FP16_equivalent / Deploy_Size_MB` (e.g. 263.9 MB / 37.9 MB = 7.0×). | 37.9 MB / 2.29 bits/param |
+
+The deployment compression ratio is shown in the export CLI output as `Compression ratio : 7.0x vs fp16` but is not stored in a dedicated CSV column. Compute it by dividing `Disk_Size_MB` (FP16 equivalent) by `Deploy_Size_MB`.
 
 ### Known limitations
 
