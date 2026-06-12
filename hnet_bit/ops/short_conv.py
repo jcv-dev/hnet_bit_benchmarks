@@ -140,6 +140,8 @@ class ShortConvolution(nn.Conv1d):
             "Only support decoding with 1 token at a time for now"
 
         x = x.squeeze(1)
+        if cache.shape[0] != x.shape[0]:
+            cache = cache[:x.shape[0]]
         if self.use_causal_conv:
             x = causal_conv1d_update(
                 x=x,

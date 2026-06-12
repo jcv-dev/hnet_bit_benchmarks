@@ -914,6 +914,17 @@ class HNetBitForCausalLM(HNetBitPreTrainedModel, GenerationMixin):
                 inference_params = self.backbone.allocate_inference_cache(
                     B, L, dtype=hidden_states.dtype,
                 )
+            elif isinstance(inference_params, HNetBitCache) and \
+                 inference_params.encoder_cache is not None and \
+                 len(inference_params.encoder_cache.states) > 0 and \
+                 inference_params.encoder_cache.states[0] is not None and \
+                 isinstance(inference_params.encoder_cache.states[0], tuple) and \
+                 inference_params.encoder_cache.states[0][0] is not None and \
+                 inference_params.encoder_cache.states[0][0].shape[0] != B:
+                # Batch size changed (HF may vary it between prefill calls)
+                inference_params = self.backbone.allocate_inference_cache(
+                    B, L, dtype=hidden_states.dtype,
+                )
 
         # Forward through hierarchical backbone
         if use_cache and inference_params is not None and inference_params.get_seq_length() > 0:
