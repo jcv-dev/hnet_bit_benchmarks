@@ -161,7 +161,15 @@ def collect_existing_results(runs_dir: str) -> list[dict]:
                     try:
                         with open(config_file) as cf:
                             cfg = json.load(cf)
-                        row["LR"] = cfg.get("learning_rate", "")
+                        lr = cfg.get("learning_rate", "")
+                        if lr in (0, 0.0, "", "0", "0.0"):
+                            model_name = cfg.get("model_name", row.get("Model", ""))
+                            model_size = cfg.get("model_size", row.get("Size", ""))
+                            if model_name == "transformer":
+                                lr = 3e-4
+                            elif model_size:
+                                lr = {"150M": 4e-3, "350M": 2.5e-3, "750M": 1.5e-3}.get(model_size, 2.5e-3)
+                        row["LR"] = lr
                         row["Batch_Size"] = cfg.get("batch_size", "")
                         row["Grad_Accum"] = cfg.get("gradient_accumulation_steps", "")
                         row["Total_Bytes"] = cfg.get("total_training_bytes", "")

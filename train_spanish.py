@@ -169,10 +169,12 @@ class SpanishTrainer:
         cfg = self.config
         max_steps = cfg.max_steps_override if cfg.max_steps_override is not None else cfg.total_steps
 
-        # Save config
+        # Save config (with resolved LR, not the raw 0.0 for auto-select)
+        config_dict = {k: v for k, v in cfg.__dict__.items()
+                       if not k.startswith("_") and not callable(v)}
+        config_dict["learning_rate"] = cfg.resolve_learning_rate()
         with open(self.output_dir / "config.json", "w") as f:
-            json.dump({k: v for k, v in cfg.__dict__.items()
-                       if not k.startswith("_") and not callable(v)}, f, indent=2, default=str)
+            json.dump(config_dict, f, indent=2, default=str)
 
         print(f"\n{'='*60}")
         print(f"Training {cfg.model_name} {cfg.model_size}")
