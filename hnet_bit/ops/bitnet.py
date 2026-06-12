@@ -64,6 +64,7 @@ def pack_ternary_tensor(tensor: torch.Tensor) -> dict:
             shape  (list[int])           — original tensor shape
             numel  (int)                 — original element count
     """
+    device = tensor.device
     w_abs_max = tensor.abs().max().item()
     scale = 1.0 / w_abs_max if w_abs_max > 0 else 1.0
 
@@ -74,9 +75,9 @@ def pack_ternary_tensor(tensor: torch.Tensor) -> dict:
     n = flat.numel()
     pad = (4 - n % 4) % 4
     if pad > 0:
-        flat = torch.cat([flat, torch.zeros(pad, dtype=torch.uint8)])
+        flat = torch.cat([flat, torch.zeros(pad, dtype=torch.uint8, device=device)])
 
-    packed = torch.zeros(flat.numel() // 4, dtype=torch.uint8)
+    packed = torch.zeros(flat.numel() // 4, dtype=torch.uint8, device=device)
     for i in range(4):
         packed |= (flat[i::4] << (2 * i))
 
@@ -97,8 +98,9 @@ def unpack_ternary_tensor(packed_dict: dict) -> torch.Tensor:
     scale = packed_dict["scale"]
     shape = packed_dict["shape"]
     n = packed_dict["numel"]
+    device = packed.device
 
-    flat = torch.zeros(packed.numel() * 4, dtype=torch.uint8)
+    flat = torch.zeros(packed.numel() * 4, dtype=torch.uint8, device=device)
     for i in range(4):
         flat[i::4] = (packed >> (2 * i)) & 0x03
 
