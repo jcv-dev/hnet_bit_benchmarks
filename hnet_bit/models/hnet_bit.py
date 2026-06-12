@@ -45,10 +45,12 @@ from hnet_bit.layers.attention import CausalMHABlock
 from hnet_bit.ops.fusedbitnet import FusedBitLinear as BitLinear
 from hnet_bit.ops.bitnet import RMSNorm
 from hnet_bit.ops.dynamic_chunking import (
-    RoutingModuleBit,
-    RoutingModuleOutput,
     ChunkLayer,
     DeChunkLayer,
+    DeChunkState,
+    RoutingModuleBit,
+    RoutingModuleOutput,
+    RoutingModuleState,
 )
 from hnet_bit.utils.hnet_cache import HGRNBlockCache, HNetBitCache
 
@@ -698,8 +700,14 @@ class HNetBit(nn.Module):
 
         # Process selected tokens through inner stage
         if hidden_states_inner.shape[0] > 0:
+            sub_cache = self._slice_hnet_cache(
+                inference_params.main_network_cache, bpred_output.boundary_mask,
+            )
             hidden_states_inner, prev_boundary_predictions = self.main_network.step(
-                hidden_states_inner, inference_params.main_network_cache,
+                hidden_states_inner, sub_cache,
+            )
+            self._merge_hnet_cache(
+                inference_params.main_network_cache, bpred_output.boundary_mask, sub_cache,
             )
         else:
             prev_boundary_predictions = []
@@ -727,6 +735,74 @@ class HNetBit(nn.Module):
 
         hidden_states = hidden_states[..., :D]
         return hidden_states, [bpred_output, *prev_boundary_predictions]
+
+    @staticmethod
+    def _slice_hgrn_cache(cache: HGRNBlockCache, mask: torch.Tensor) -> HGRNBlockCache:
+        """Create sub-cache with only mask-selected batch entries."""
+        sub = HGRNBlockCache()
+        for state in cache.states:
+            if state is None:
+                sub.states.append(None)
+            else:
+                sub.states.append(tuple(s[mask] for s in state))
+        sub.seen_tokens = cache.seen_tokens
+        return sub
+
+    @staticmethod
+    def _merge_hgrn_cache(full: HGRNBlockCache, mask: torch.Tensor, sub: HGRNBlockCache) -> None:
+        """Copy sub-cache states back into full cache at mask positions."""
+        for i, (full_state, sub_state) in enumerate(zip(full.states, sub.states)):
+            if full_state is None or sub_state is None:
+                continue
+            merged = []
+            for full_s, sub_s in zip(full_state, sub_state):
+                full_s[mask] = sub_s
+                merged.append(full_s)
+            full.states[i] = tuple(merged)
+
+    @staticmethod
+    def _slice_hnet_cache(cache: HNetBitCache, mask: torch.Tensor) -> HNetBitCache:
+        """Sub-select all batch-dependent tensors in a HNetBitCache by mask."""
+        if cache.is_innermost:
+            return HNetBitCache(
+                main_network_cache=HNetBit._slice_hgrn_cache(cache.main_network_cache, mask),
+                is_innermost=True,
+            )
+        sub = HNetBitCache(is_innermost=False)
+        if cache.encoder_cache is not None:
+            sub.encoder_cache = HNetBit._slice_hgrn_cache(cache.encoder_cache, mask)
+        if cache.routing_state is not None:
+            sub.routing_state = RoutingModuleState(
+                has_seen_tokens=cache.routing_state.has_seen_tokens[mask],
+                last_hidden_state=cache.routing_state.last_hidden_state[mask],
+            )
+        if cache.main_network_cache is not None:
+            sub.main_network_cache = HNetBit._slice_hnet_cache(cache.main_network_cache, mask)
+        if cache.dechunk_state is not None:
+            sub.dechunk_state = DeChunkState(
+                last_value=cache.dechunk_state.last_value[mask],
+            )
+        if cache.decoder_cache is not None:
+            sub.decoder_cache = HNetBit._slice_hgrn_cache(cache.decoder_cache, mask)
+        return sub
+
+    @staticmethod
+    def _merge_hnet_cache(full: HNetBitCache, mask: torch.Tensor, sub: HNetBitCache) -> None:
+        """Copy sub-cache states back into full cache at mask positions."""
+        if full.is_innermost:
+            HNetBit._merge_hgrn_cache(full.main_network_cache, mask, sub.main_network_cache)
+            return
+        if sub.encoder_cache is not None:
+            HNetBit._merge_hgrn_cache(full.encoder_cache, mask, sub.encoder_cache)
+        if sub.routing_state is not None:
+            full.routing_state.has_seen_tokens[mask] = sub.routing_state.has_seen_tokens
+            full.routing_state.last_hidden_state[mask] = sub.routing_state.last_hidden_state
+        if sub.main_network_cache is not None:
+            HNetBit._merge_hnet_cache(full.main_network_cache, mask, sub.main_network_cache)
+        if sub.dechunk_state is not None:
+            full.dechunk_state.last_value[mask] = sub.dechunk_state.last_value
+        if sub.decoder_cache is not None:
+            HNetBit._merge_hgrn_cache(full.decoder_cache, mask, sub.decoder_cache)
 
 
 # ---------------------------------------------------------------------------
