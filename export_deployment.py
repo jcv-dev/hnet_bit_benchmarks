@@ -158,6 +158,7 @@ def export_model(
         output_dir = os.path.dirname(checkpoint_path)
         output_path = os.path.join(output_dir, "model_deploy.pt")
 
+    # Save once without stats to measure exact file size, then resave with accurate metadata
     export_state = {
         "model_state_dict": model.state_dict(),
         "model_config": {
@@ -169,16 +170,18 @@ def export_model(
             "is_byte_level": is_byte_level,
             "frozen_layers": frozen,
         },
-        "export_stats": {
-            "checkpoint_size_mb": round(checkpoint_size_mb, 1),
-            "fp16_size_mb": round(fp16_size_mb, 1),
-            "export_size_mb": round(export_size_mb, 1),
-            "bits_per_param": round(bits_per_param, 2),
-            "compression_ratio": round(fp16_size_mb / max(export_size_mb, 0.01), 1),
-        },
     }
     torch.save(export_state, output_path)
     export_size_mb = os.path.getsize(output_path) / (1024 ** 2)
+
+    export_state["export_stats"] = {
+        "checkpoint_size_mb": round(checkpoint_size_mb, 1),
+        "fp16_size_mb": round(fp16_size_mb, 1),
+        "export_size_mb": round(export_size_mb, 1),
+        "bits_per_param": round(bits_per_param, 2),
+        "compression_ratio": round(fp16_size_mb / max(export_size_mb, 0.01), 1),
+    }
+    torch.save(export_state, output_path)
 
     stats = {
         "model_name": model_name,
