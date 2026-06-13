@@ -53,6 +53,20 @@ from metrics_spanish import compute_bpb, measure_inference_memory
 # Trainer
 # ============================================================================
 
+
+def _cast_num(value: str) -> int | float | str:
+    """Cast string to int/float if possible, else return as-is."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        pass
+    return value
+
+
 class SpanishTrainer:
     """
     Training loop for the Spanish Billion Words benchmark.
@@ -197,6 +211,7 @@ class SpanishTrainer:
         data_iter = iter(self.train_loader)
         t_start = time.time()
         self.training_start_time = t_start
+        initial_bytes = self.bytes_seen
 
         while self.global_step < max_steps:
             # Get batch (cycle)
@@ -256,7 +271,7 @@ class SpanishTrainer:
                 if self.global_step % cfg.log_interval_steps == 0:
                     lr = max(self.scheduler.get_last_lr())
                     elapsed = time.time() - t_start
-                    tok_per_sec = self.bytes_seen / max(elapsed, 1)
+                    tok_per_sec = (self.bytes_seen - initial_bytes) / max(elapsed, 1)
                     
                     train_entry = {
                         "step": self.global_step,
@@ -421,6 +436,19 @@ class SpanishTrainer:
             self._passed_milestones = set(ckpt["milestones_passed"])
         else:
             self._passed_milestones = {m for m in self._milestone_set if self.bytes_seen >= m}
+
+        train_csv = self.output_dir / "training_steps_log.csv"
+        if train_csv.exists():
+            with open(train_csv, "r", newline="") as f:
+                self.train_log = list(csv.DictReader(f))
+            self.train_log = [{k: _cast_num(v) for k, v in e.items()} for e in self.train_log]
+
+        val_csv = self.output_dir / "validation_log.csv"
+        if val_csv.exists():
+            with open(val_csv, "r", newline="") as f:
+                self.results_log = list(csv.DictReader(f))
+            self.results_log = [{k: _cast_num(v) for k, v in e.items()} for e in self.results_log]
+
         print(f"  Resumed from {checkpoint_path}: step={self.global_step:,}, "
               f"bytes_seen={self.bytes_seen:,}, best_bpb={self.best_val_bpb:.4f}")
 
