@@ -148,6 +148,20 @@ source /venv/main/bin/activate
 python train_spanish.py --model hybrid --size 150M
 
 # Detach: Ctrl+B, then D
+
+### Resuming after an interruption
+
+If your cloud instance is preempted or crashes, you can resume training from the latest checkpoint:
+
+```bash
+python train_spanish.py --model hybrid --size 150M --skip_data_build \
+    --resume_from runs/spanish/hybrid_150M/checkpoint_step_XXXX.pt
+```
+
+If the checkpoint predates logging reconstruction support, run `reconstruct_logs.py` afterward to rebuild your `validation_log.csv`:
+```bash
+python reconstruct_logs.py --run_dir runs/spanish/hybrid_150M
+```
 # Reconnect later: tmux attach -t hybrid_150M
 
 # Start multiple runs in parallel (one session per model):
