@@ -70,6 +70,7 @@ class SpanishTrainer:
         is_byte_level: bool,
         vocab_size: int,
         avg_bytes_per_token: float = 1.0,
+        checkpoint_path: str | None = None,
     ):
         self.model = model
         self.config = config
@@ -127,6 +128,9 @@ class SpanishTrainer:
         self.output_dir = Path(config.output_dir) / f"{config.model_name}_{config.model_size}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        if checkpoint_path is not None:
+            self._load_checkpoint(checkpoint_path)
+
     # ------------------------------------------------------------------
     # Load balancing
     # ------------------------------------------------------------------
@@ -168,6 +172,8 @@ class SpanishTrainer:
         self.model.train()
         cfg = self.config
         max_steps = cfg.max_steps_override if cfg.max_steps_override is not None else cfg.total_steps
+        if self.global_step > 0 and cfg.max_steps_override is not None:
+            max_steps = self.global_step + cfg.max_steps_override
 
         # Save config (with resolved LR, not the raw 0.0 for auto-select)
         config_dict = {k: v for k, v in cfg.__dict__.items()
@@ -394,11 +400,27 @@ class SpanishTrainer:
             "global_step": self.global_step,
             "bytes_seen": self.bytes_seen,
             "best_val_bpb": self.best_val_bpb,
+            "milestones_passed": sorted(self._passed_milestones),
             "config": {k: v for k, v in self.config.__dict__.items()
                        if not k.startswith("_") and not callable(v)},
         }
         torch.save(state, path)
         print(f"  Saved checkpoint: {path}")
+
+    def _load_checkpoint(self, checkpoint_path: str) -> None:
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt["model_state_dict"])
+        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if "scaler_state_dict" in ckpt and self.scaler is not None:
+            self.scaler.load_state_dict(ckpt["scaler_state_dict"])
+        self.global_step = ckpt["global_step"]
+        self.bytes_seen = ckpt["bytes_seen"]
+        self.best_val_bpb = ckpt.get("best_val_bpb", float("inf"))
+        if "milestones_passed" in ckpt:
+            self._passed_milestones = set(ckpt["milestones_passed"])
+        print(f"  Resumed from {checkpoint_path}: step={self.global_step:,}, "
+              f"bytes_seen={self.bytes_seen:,}, best_bpb={self.best_val_bpb:.4f}")
 
     def _cleanup_intermediate_checkpoints(self) -> None:
         """Remove step checkpoints, keeping only final, best, and milestone."""
@@ -596,6 +618,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to checkpoint for eval_only mode")
 
+    # Resume
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Path to checkpoint to resume training from")
+
     return parser.parse_args()
 
 
@@ -715,6 +741,7 @@ def main():
         is_byte_level=is_byte_level,
         vocab_size=vocab_size,
         avg_bytes_per_token=avg_bytes_per_token,
+        checkpoint_path=args.resume_from,
     )
     trainer.train()
 
