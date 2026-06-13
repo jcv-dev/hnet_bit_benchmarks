@@ -419,6 +419,8 @@ class SpanishTrainer:
         self.best_val_bpb = ckpt.get("best_val_bpb", float("inf"))
         if "milestones_passed" in ckpt:
             self._passed_milestones = set(ckpt["milestones_passed"])
+        else:
+            self._passed_milestones = {m for m in self._milestone_set if self.bytes_seen >= m}
         print(f"  Resumed from {checkpoint_path}: step={self.global_step:,}, "
               f"bytes_seen={self.bytes_seen:,}, best_bpb={self.best_val_bpb:.4f}")
 
