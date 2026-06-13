@@ -61,6 +61,18 @@ python train_spanish.py --model matmulfree --size 750M
 python train_spanish.py --model hybrid_attn --size 150M
 ```
 
+#### Resume from checkpoint
+
+```bash
+python train_spanish.py --model transformer --size 150M --skip_data_build \
+    --resume_from runs/spanish/transformer_150M/checkpoint_step_125000.pt
+```
+
+If the checkpoint was created before logging support during resume was added, run `reconstruct_logs.py` afterward:
+```bash
+python reconstruct_logs.py --run_dir runs/spanish/transformer_150M
+```
+
 ### 3. Aggregate results
 
 ```bash
@@ -116,6 +128,7 @@ All models consume the same 25B bytes of underlying Spanish text. A `bytes_per_s
 ├── generate_results.py        # Result aggregation + auto-export deploy models
 ├── export_deployment.py       # Compact ternary-weight deployment export
 ├── profile_inference.py       # Prefill latency + decode throughput profiler
+├── reconstruct_logs.py        # Reconstructs validation_log.csv from surviving checkpoints
 ├── test_smoke.sh              # Smoke test script
 ├── AGENTS.md                  # Complete thesis source-of-truth documentation
 ├── architecture.md            # Detailed HNetBit architecture reference

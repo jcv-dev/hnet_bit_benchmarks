@@ -21,6 +21,7 @@ Thesis benchmark comparing three language model architectures on Spanish Billion
 | `generate_results.py` | Aggregates per-run results into a comparison CSV (auto-exports deploy models) |
 | `export_deployment.py` | Converts training checkpoint → compact ternary-weight deployment (CLI: `--checkpoint`) |
 | `profile_inference.py` | Measures prefill latency + decode throughput for all architectures (CLI: `--checkpoint` or `--export`) |
+| `reconstruct_logs.py` | Reconstruct `validation_log.csv` from surviving step checkpoints after a resume |
 | `hnet_bit/` | The hybrid model implementation (layers, ops, models) |
 | `matmulfreellm/` | Reference MatMulFree repo (used by matmulfree model) |
 | `hnet-main/` | Reference HNet repo (not directly imported) |
@@ -45,6 +46,18 @@ python train_spanish.py --model hybrid --size 150M --max_steps 1 --batch_size 1
 ```bash
 python train_spanish.py --model hybrid --size 150M                    # full run
 python train_spanish.py --model hybrid --size 150M --max_steps 100    # debug run
+```
+
+### Resume from checkpoint
+```bash
+python train_spanish.py --model transformer --size 150M --skip_data_build \
+    --resume_from runs/spanish/transformer_150M/checkpoint_step_125000.pt
+```
+Restores model, optimizer, scheduler, scaler, global_step, bytes_seen, best_val_bpb, and milestone tracking.
+Use `--skip_data_build` (data is already cached). CSV logs are appended, not overwritten.
+If the checkpoint predates the `--resume_from` feature, run `reconstruct_logs.py` afterward:
+```bash
+python reconstruct_logs.py --run_dir runs/spanish/transformer_150M
 ```
 
 ### Results
