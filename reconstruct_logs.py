@@ -90,14 +90,14 @@ def main():
             max_batches=args.max_batches or 200,
         )
 
-        print(f"  step={step:>7,}  bytes={bytes_seen:>15,}  val_loss={result['val_loss']:.4f}  "
-              f"val_bpb={result['val_bpb']:.4f}")
+        print(f"  step={step:>7,}  bytes={bytes_seen:>15,}  loss={result['loss']:.4f}  "
+              f"bpb={result['bpb']:.4f}")
 
         records.append({
             "step": step,
             "bytes_seen": bytes_seen,
-            "val_loss": round(result["val_loss"], 6),
-            "val_bpb": round(result["val_bpb"], 6),
+            "val_loss": round(result["loss"], 6),
+            "val_bpb": round(result["bpb"], 6),
         })
 
         del ckpt
