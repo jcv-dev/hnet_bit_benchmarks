@@ -1,0 +1,84 @@
+\section{Implementación y optimizaciones}
+
+Esta sección describe los aspectos prácticos de la implementación del modelo HNetBit, las decisiones de ingeniería de software y las optimizaciones de bajo nivel que permiten su entrenamiento eficiente en una sola GPU A100.
+
+\subsection{Organización del código}
+
+El proyecto se estructura en los siguientes módulos principales:
+
+\begin{itemize}
+\item \texttt{hnet\_bit/models/hnet\_bit.py}: define las clases \texttt{HNetBitConfig}, \texttt{HGRNBitStack}, \texttt{HNetBit} (recursivo) y \texttt{HNetBitForCausalLM}.
+\item \texttt{hnet\_bit/layers/hgrn\_bit.py}: contiene los bloques \texttt{HGRNBitAttention}, \texttt{HGRNBitMLP} y \texttt{HGRNBitBlock}.
+\item \texttt{hnet\_bit/ops/bitnet.py}: implementa \texttt{BitLinear}, \texttt{weight\_quant} y \texttt{activation\_quant} con soporte STE.
+\item \texttt{hnet\_bit/ops/dynamic\_chunking.py}: módulos \texttt{RoutingModuleBit}, \texttt{ChunkLayer}, \texttt{DeChunkLayer}.
+\item \texttt{hnet\_bit/ops/hgrn/}: kernels Triton y fallbacks CPU para la recurrencia (\texttt{recurrent\_fuse.py}, \texttt{chunk.py}).
+\end{itemize}
+
+El entrenamiento de los benchmarks (comparación con transformer y MatMul-Free plano) se realiza mediante el script unificado \texttt{train\_spanish.py}, que carga la fábrica de modelos (\texttt{model\_factory.py}) y aplica la misma configuración de optimizador y horario de aprendizaje a todas las arquitecturas.
+
+\subsection{Kernels Triton y gestión de memoria}
+
+Para acelerar las operaciones más costosas se implementaron kernels Triton personalizados:
+
+\begin{itemize}
+\item \textbf{FusedBitLinear}: Fusiona la normalización RMSNorm, la cuantización de activaciones y la multiplicación ternaria en un solo kernel, reduciendo los viajes de ida y vuelta entre HBM y SRAM. La implementación sigue el esquema de bloque por fila/columna y utiliza acumulación de enteros para la operación ternaria.
+\item \textbf{Fused recurrent HGRN}: kernel que ejecuta la recurrencia secuencial pero paraleliza a través de la dimensión de cabezas y el tamaño de lote. Utiliza registros para mantener los estados en SRAM. Se autotunea el tamaño de bloque según la longitud de secuencia.
+\item \textbf{Chunk HGRN}: implementa el algoritmo de escaneo paralelo por fragmentos. Para cada fragmento de tamaño $C=64$, se calculan las matrices de transición local y luego se combinan mediante una reducción paralela. La complejidad es $O(L)$ pero con una constante significativamente menor que el kernel recurrente puro.
+\end{itemize}
+
+Todos los kernels tienen fallbacks en PyTorch puro (bucles \texttt{for}) cuando se ejecutan en CPU o cuando Triton no está disponible (por ejemplo, en contenedores Docker sin privilegios). El fallback se activa automáticamente mediante la variable de entorno \texttt{HNETBIT\_DISABLE\_TRITON}.
+
+\subsection{Manejo de la caché de generación}
+
+Durante la inferencia autorregresiva, el modelo HNetBit mantiene una estructura de caché recursiva:
+
+\begin{verbatim}
+@dataclass
+class HNetBitCache:
+    encoder_cache: List[torch.Tensor]   # estados h para cada bloque encoder
+    routing_state: RoutingModuleState   # último token y contador
+    main_network_cache: HNetBitCache    # caché de la siguiente etapa (recursiva)
+    dechunk_state: DeChunkState         # último valor EMA
+    decoder_cache: List[torch.Tensor]   # estados h para cada bloque decoder
+\end{verbatim}
+
+Esta estructura permite que cada etapa gestione su propio estado sin interferencias. En el paso de generación, cuando el módulo de enrutamiento decide que el token actual no es un límite, la etapa interna se omite completamente y solo se actualiza el EMA, lo que acelera significativamente la decodificación.
+
+\subsection{Optimizaciones de memoria para entrenamiento}
+
+A pesar de que el modelo híbrido no soporta gradient checkpointing, se implementaron otras técnicas para reducir el consumo de VRAM:
+
+\begin{itemize}
+\item Uso de bf16 en todas las operaciones (los pesos ternarios se mantienen en FP32 durante el entrenamiento, pero las activaciones y gradientes en bf16).
+\item Compresión de la caché del optimizador AdamW: solo se almacenan los momentos de los parámetros que realmente se actualizan (en BitLinear, todos los parámetros se actualizan, pero las proyecciones residuales full-precision son muy pequeñas).
+\item Liberación manual de buffers intermedios en cada etapa: después de usar los tensores de chunk y dechunk, se llama explícitamente a \texttt{del} y \texttt{torch.cuda.empty\_cache()} en puntos estratégicos.
+\item Descomposición de lotes grandes: cuando la memoria escasea, se reduce \texttt{batch\_size} y se aumenta \texttt{gradient\_accumulation} proporcionalmente.
+\end{itemize}
+
+Con estas optimizaciones, el modelo híbrido de 150M entrena en aproximadamente 15.5 GB de VRAM, y el de 350M en 32 GB, cabiendo ambos holgadamente en una A100 de 80 GB.
+
+\subsection{Exportación para despliegue}
+
+Una vez entrenado, el modelo se puede exportar a un formato compacto mediante \texttt{export\_deployment.py}. El proceso realiza:
+
+\begin{enumerate}
+\item Extracción de los tensores de peso de cada \texttt{BitLinear}.
+\item Cuantización determinista: $\tilde{W} = \text{round\_clamp}(W \cdot \alpha, -1, 1)$, almacenando solo los enteros $\{-1,0,1\}$.
+\item Empaquetado de bits: se codifican tres estados (2 bits por parámetro) en un arreglo de uint8, utilizando la correspondencia $-1 \rightarrow 00$, $0 \rightarrow 01$, $+1 \rightarrow 10$.
+\item Eliminación de todos los buffers del optimizador y del estado de normalización que no son necesarios para inferencia.
+\item Guardado como \texttt{model\_deploy.pt} mediante \texttt{torch.save} con compresión.
+\end{enumerate}
+
+Durante la inferencia con el modelo exportado, los pesos se desempaquetan dinámicamente a float32 (o bf16) y se cargan en las capas BitLinear, que ahora operan en modo \texttt{eval} sin STE. La compresión resultante es de $7-8\times$ frente a FP16, como se reportó en la Tabla LLENAR TABLA AQUI.
+
+\subsection{Integración con Hugging Face y pipelines de datos}
+
+El modelo \texttt{HNetBitForCausalLM} hereda de \texttt{PreTrainedModel} y \texttt{GenerationMixin}, lo que permite usar las utilidades estándar de Hugging Face como \texttt{model.generate()} y \texttt{pipeline}. Se implementan los métodos necesarios:
+
+\begin{itemize}
+\item \texttt{\_prepare\_cache\_for\_generation}: crea una instancia de \texttt{HNetBitCache} en lugar de \texttt{DynamicCache}.
+\item \texttt{\_reorder\_cache}: reordena los estados de la caché cuando se usa beam search.
+\item \texttt{resize\_token\_embeddings}: permite ajustar el vocabulario (aunque para byte-level no es necesario).
+\end{itemize}
+
+El pipeline de datos (\texttt{data\_spanish.py}) maneja dos modos: byte-level (concatenación directa de bytes, padded a 4096) y BPE (tokenización con GPT-2, padded a 1280). Se utiliza memoria mapeada (\texttt{np.memmap}) para almacenar los conjuntos de entrenamiento y validación en disco, evitando cargar todo el corpus en RAM. El tokenizador BPE corre en procesos paralelos con reciclaje periódico para controlar la memoria.

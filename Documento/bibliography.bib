@@ -1,0 +1,165 @@
+@article{Yu2023,
+  author       = {Lili Yu and Dániel Simig and Colin Flaherty and Armen Aghajanyan and Luke Zettlemoyer and Mike Lewis},
+  title        = {{MEGABYTE}: Predicting Million-byte Sequences with Multiscale Transformers},
+  journal      = {Advances in Neural Information Processing Systems},
+  volume       = {36},
+  year         = {2023},
+  month        = {5},
+  publisher    = {Neural information processing systems foundation},
+  abstract     = {Autoregressive transformers are spectacular models for short sequences but scale poorly to long sequences such as high-resolution images, podcasts, code, or books. We proposed Megabyte, a multi-scale decoder architecture that enables end-to-end differentiable modeling of sequences of over one million bytes. Megabyte segments sequences into patches and uses a local submodel within patches and a global model between patches. This enables sub-quadratic self-attention, much larger feedforward layers for the same compute, and improved parallelism during decoding -- unlocking better performance at reduced cost for both training and generation. Extensive experiments show that Megabyte allows byte-level models to perform competitively with subword models on long context language modeling, achieve state-of-the-art density estimation on ImageNet, and model audio from raw files. Together, these results establish the viability of tokenization-free autoregressive sequence modeling at scale.},
+  eprint       = {2305.07185},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.LG},
+  url          = {https://arxiv.org/abs/2305.07185}
+}
+
+@article{Ma2024,
+  author       = {Shuming Ma and Hongyu Wang and Lingxiao Ma and Lei Wang and Wenhui Wang and Shaohan Huang and Li Dong and Ruiping Wang and Jilong Xue and Furu Wei},
+  title        = {The Era of 1-bit {LLMs}: All Large Language Models are in 1.58 Bits},
+  year         = {2024},
+  month        = {2},
+  abstract     = {Recent research, such as BitNet, is paving the way for a new era of 1-bit Large Language Models (LLMs). In this work, we introduce a 1-bit LLM variant, namely BitNet b1.58, in which every single parameter (or weight) of the LLM is ternary \{-1, 0, 1\}. It matches the full-precision (i.e., FP16 or BF16) Transformer LLM with the same model size and training tokens in terms of both perplexity and end-task performance, while being significantly more cost-effective in terms of latency, memory, throughput, and energy consumption. More profoundly, the 1.58-bit LLM defines a new scaling law and recipe for training new generations of LLMs that are both high-performance and cost-effective. Furthermore, it enables a new computation paradigm and opens the door for designing specific hardware optimized for 1-bit LLMs.},
+  eprint       = {2402.17764},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.CL},
+  url          = {https://arxiv.org/abs/2402.17764}
+}
+
+@article{Hwang2025,
+  author       = {Sukjun Hwang and Brandon Wang and Albert Gu},
+  title        = {Dynamic Chunking for End-to-End Hierarchical Sequence Modeling},
+  year         = {2025},
+  month        = {7},
+  abstract     = {Major progress on language models (LMs) in recent years has largely resulted from moving away from specialized models designed for specific tasks, to general models based on powerful architectures (e.g. the Transformer) that learn everything from raw data. Despite this trend, pre-processing steps such as tokenization remain a barrier to true end-to-end foundation models. We introduce a collection of new techniques that enable a dynamic chunking mechanism which automatically learns content- and context- dependent segmentation strategies learned jointly with the rest of the model. Incorporating this into an explicit hierarchical network (H-Net) allows replacing the (implicitly hierarchical) tokenization-LM-detokenization pipeline with a single model learned fully end-to-end. When compute- and data- matched, an H-Net with one stage of hierarchy operating at the byte level outperforms a strong Transformer language model operating over BPE tokens. Iterating the hierarchy to multiple stages further increases its performance by modeling multiple levels of abstraction, demonstrating significantly better scaling with data and matching the token-based Transformer of twice its size. H-Nets pretrained on English show significantly increased character-level robustness, and qualitatively learn meaningful data-dependent chunking strategies without any heuristics or explicit supervision. Finally, the H-Net's improvement over tokenized pipelines is further increased in languages and modalities with weaker tokenization heuristics, such as Chinese and code, or DNA sequences (nearly 4x improvement in data efficiency over baselines), showing the potential of true end-to-end models that learn and scale better from unprocessed data.},
+  eprint       = {2507.07955},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.LG},
+  url          = {https://arxiv.org/abs/2507.07955}
+}
+
+@article{Zhu2024,
+  author       = {Rui-Jie Zhu and Yu Zhang and Steven Abreu and Ethan Sifferman and Tyler Sheaves and Yiqiao Wang and Dustin Richmond and Sumit Bam Shrestha and Peng Zhou and Jason K. Eshraghian},
+  title        = {Scalable MatMul-free Language Modeling},
+  year         = {2024},
+  month        = {6},
+  abstract     = {Large Language Models (LLMs) have fundamentally altered how we approach scaling in machine learning. However, these models pose substantial computational and memory challenges, primarily due to the reliance on matrix multiplication (MatMul) within their attention and feed-forward (FFN) layers. We demonstrate that MatMul operations can be eliminated from LLMs while maintaining strong performance, even at billion-parameter scales. Our MatMul-free models, tested on models up to 2.7B parameters, are comparable to state-of-the-art pre-trained Transformers, and the performance gap narrows as model size increases. Our approach yields significant memory savings: a GPU-efficient implementation reduces memory consumption by up to 61\% during training and over 10x during inference. When adapted for a multi-chip neuromorphic system, the model leverages asynchronous processing to achieve 4x higher throughput with 10x less energy than edge GPUs.},
+  eprint       = {2406.02528},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.CL},
+  url          = {https://arxiv.org/abs/2406.02528}
+}
+
+@article{Slagle2024,
+  author       = {Kevin Slagle},
+  title        = {{SpaceByte}: Towards Deleting Tokenization from Large Language Modeling},
+  journal      = {Advances in Neural Information Processing Systems},
+  volume       = {37},
+  year         = {2024},
+  month        = {4},
+  publisher    = {Neural information processing systems foundation},
+  abstract     = {Tokenization is widely used in large language models because it significantly improves performance. However, tokenization imposes several disadvantages, such as performance biases, increased adversarial vulnerability, decreased character-level modeling performance, and increased modeling complexity. To address these disadvantages without sacrificing performance, we propose SpaceByte, a novel byte-level decoder architecture that closes the performance gap between byte-level and subword autoregressive language modeling. SpaceByte consists of a byte-level Transformer model, but with extra larger transformer blocks inserted in the middle of the layers. We find that performance is significantly improved by applying these larger blocks only after certain bytes, such as space characters, which typically denote word boundaries. Our experiments show that for a fixed training and inference compute budget, SpaceByte outperforms other byte-level architectures and roughly matches the performance of tokenized Transformer architectures.},
+  eprint       = {2404.14408},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.CL},
+  url          = {https://arxiv.org/abs/2404.14408}
+}
+
+@misc{vaswani2023attentionneed,
+      title={Attention Is All You Need}, 
+      author={Ashish Vaswani and Noam Shazeer and Niki Parmar and Jakob Uszkoreit and Llion Jones and Aidan N. Gomez and Lukasz Kaiser and Illia Polosukhin},
+      year={2023},
+      eprint={1706.03762},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/1706.03762}, 
+}
+
+@misc{hoffmann2022,
+      title={Training Compute-Optimal Large Language Models}, 
+      author={Jordan Hoffmann and Sebastian Borgeaud and Arthur Mensch and Elena Buchatskaya and Trevor Cai and Eliza Rutherford and Diego de Las Casas and Lisa Anne Hendricks and Johannes Welbl and Aidan Clark and Tom Hennigan and Eric Noland and Katie Millican and George van den Driessche and Bogdan Damoc and Aurelia Guy and Simon Osindero and Karen Simonyan and Erich Elsen and Jack W. Rae and Oriol Vinyals and Laurent Sifre},
+      year={2022},
+      eprint={2203.15556},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2203.15556}, 
+}
+
+@misc{kaplan2020,
+      title={Scaling Laws for Neural Language Models}, 
+      author={Jared Kaplan and Sam McCandlish and Tom Henighan and Tom B. Brown and Benjamin Chess and Rewon Child and Scott Gray and Alec Radford and Jeffrey Wu and Dario Amodei},
+      year={2020},
+      eprint={2001.08361},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2001.08361}, 
+}
+
+@online{web1,
+  author       = {HuggingFace},
+  title        = {Byte-Pair Encoding tokenization},
+  year         = {2024},
+  url          = {https://huggingface.co/learn/llm-course/es/chapter6/5},
+  note         = {Recuperado de Hugging Face LLM Course}
+}
+
+@online{web2,
+  author       = {HuggingFace},
+  title        = {WordPiece},
+  year         = {2024},
+  url          = {https://huggingface.co/learn/llm-course/en/chapter6/6},
+  note         = {Recuperado de Hugging Face LLM Course}
+}
+
+@online{web3,
+  author       = {Google},
+  title        = {SentencePiece: Unsupervised text tokenizer},
+  year         = {2024},
+  url          = {https://github.com/google/sentencepiece},
+  note         = {Repositorio oficial de SentencePiece en GitHub}
+}
+
+@article{microsoft2023phi2,
+  title={Phi-2: The surprising power of small language models},
+  author={{Microsoft Research}},
+  year={2023},
+  url={https://www.microsoft.com/en-us/research/blog/phi-2-the-surprising-power-of-small-language-models/}
+}
+
+@article{sanh2019distilbert,
+  title={DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter},
+  author={Sanh, Victor and Debut, Lysandre and Chaumond, Julien and Wolf, Thomas},
+  year={2019},
+  journal={arXiv preprint arXiv:1910.01108},
+  url={https://arxiv.org/abs/1910.01108}
+}
+
+@article{google2024gemma,
+  title={Gemma: Open models based on Gemini research and technology},
+  author={{Google DeepMind}},
+  year={2024},
+  url={https://blog.google/technology/developers/gemma-open-models/}
+}
+
+@article{zhang2024tinyllama,
+  title={TinyLlama: An open-source small language model},
+  author={Zhang, Peiyuan and Zeng, Guangtao and Wang, Tai and Lu, Wei},
+  year={2024},
+  journal={arXiv preprint arXiv:2401.02385},
+  url={https://arxiv.org/abs/2401.02385}
+}
+
+@article{peng2023rwkv,
+  title={RWKV: Reinventing RNNs for the Transformer era},
+  author={Peng, Bo and Alcaide, Eric and Anthony, Quentin and others},
+  year={2023},
+  journal={arXiv preprint arXiv:2305.13048},
+  url={https://arxiv.org/abs/2305.13048}
+}
+
+@inproceedings{lepikhin2020gshard,
+  title={Gshard: Scaling giant models with conditional computation and automatic sharding},
+  author={Lepikhin, Dmitry and Lee, HyoukJoong and Xu, Yuanzhong and Chen, Dehao and Firat, Orhan and Huang, Yanping and Krikun, Maxim and Shazeer, Noam and Chen, Zhifeng},
+  year={2020},
+  booktitle={International Conference on Learning Representations},
+  url={https://arxiv.org/abs/2006.16668}
+}

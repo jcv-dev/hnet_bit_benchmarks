@@ -1,0 +1,108 @@
+\section{Resultados}
+
+\subsection{Calidad de los modelos}
+
+La Tabla~\ref{tab:bpb_results} muestra los valores finales de BPB en el conjunto de validación para cada arquitectura y tamaño, después de consumir los 25 000 millones de bytes de entrenamiento.
+
+\begin{table}[H]
+\centering
+\caption{BPB de validación (menor es mejor)}
+\label{tab:bpb_results}
+\begin{tabular}{lccc}
+\toprule
+Modelo & 150M & 350M & 750M \\
+\midrule
+Transformer (BPE) & 0.972 & 0.841 & 0.735 \\
+MatMul-Free plano & 0.988 & 0.872 & 0.781 \\
+HNetBit (híbrido) & 0.953 & 0.823 & 0.719 \\
+Hybrid\_attn (150M) & 0.949 & — & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Se observa que el modelo híbrido propuesto supera consistentemente al transformer en todos los tamaños, con una mejora relativa del 1.9\,\% a 150M, 2.1\,\% a 350M y 2.2\,\% a 750M. La variante con atención en la etapa interna (\texttt{hybrid\_attn}) logra el mejor BPB entre los modelos de 150M, aunque la diferencia con \texttt{hybrid} es pequeña (0.949 frente a 0.953). El MatMul-Free plano, si bien es competitivo, presenta un BPB ligeramente superior al transformer en todas las escalas.
+
+Las curvas de aprendizaje (Figura~\ref{fig:learning_curves}) muestran que la ventaja del modelo jerárquico se consolida después de procesar aproximadamente 5 000 millones de bytes y se mantiene durante el resto del entrenamiento.
+
+\subsection{Eficiencia en parámetros y compresión}
+
+La Tabla~\ref{tab:param_counts} desglosa el número de parámetros totales y no relacionados con embeddings. El transformer paga un costo elevado por su vocabulario BPE: a 150M, 77 M de parámetros (40.5\,\%) corresponden a las tablas de embedding y cabecera LM, que no contribuyen al cómputo de las capas recurrentes.
+
+\begin{table}[H]
+\centering
+\caption{Conteo de parámetros (millones)}
+\label{tab:param_counts}
+\begin{tabular}{lcccc}
+\toprule
+Modelo & Tamaño & Parámetros totales & Parámetros no-embedding \\
+\midrule
+Transformer & 150M & 190M & 113M \\
+Transformer & 350M & 505M & 403M \\
+Transformer & 750M & 1060M & 906M \\
+MatMul-Free & 150M & 114M & 114M \\
+MatMul-Free & 350M & 309M & 309M \\
+MatMul-Free & 750M & 794M & 794M \\
+HNetBit & 150M & 138M & 138M \\
+HNetBit & 350M & 419M & 419M \\
+HNetBit & 750M & 1026M & 1026M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Para los modelos ternarios, el tamaño en disco tras la exportación de despliegue es significativamente menor. Por ejemplo, el modelo HNetBit de 150M ocupa 37.9 MB (2.29 bits/parámetro), frente a los 263.9 MB que ocuparían sus pesos en FP16, lo que representa una compresión de 7.0×. La Tabla~\ref{tab:deploy_size} resume estas cifras.
+
+\begin{table}[H]
+\centering
+\caption{Tamaño de despliegue y compresión}
+\label{tab:deploy_size}
+\begin{tabular}{lccc}
+\toprule
+Modelo & Tamaño & Tamaño despliegue & Bits/parámetro \\
+\midrule
+MatMul-Free & 150M & 31.8 MB & 2.26 \\
+MatMul-Free & 350M & 85.7 MB & 2.28 \\
+MatMul-Free & 750M & 220.4 MB & 2.29 \\
+HNetBit & 150M & 37.9 MB & 2.29 \\
+HNetBit & 350M & 115.2 MB & 2.30 \\
+HNetBit & 750M & 282.5 MB & 2.31 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Rendimiento de inferencia}
+
+La Tabla~\ref{tab:inference} presenta las mediciones de latencia y rendimiento en una GPU A100 80GB. El modelo híbrido muestra una latencia de prefil para 4096 bytes de 108 ms, ligeramente superior a la del transformer (98 ms) pero inferior a la del MatMul-Free plano (132 ms). En decodificación, HNetBit alcanza 49 tok/s en lote 1 y 377 tok/s en lote 8, superando al MatMul-Free plano y situándose cerca del transformer.
+
+\begin{table}[H]
+\centering
+\caption{Métricas de inferencia (A100 80GB)}
+\label{tab:inference}
+\begin{tabular}{lcccc}
+\toprule
+Modelo (150M) & Prefil 4096 (ms) & Decode BS1 (tok/s) & Decode BS8 (tok/s) & Memoria pico (MB) \\
+\midrule
+Transformer & 98 & 53 & 412 & 820 \\
+MatMul-Free & 132 & 42 & 320 & 573 \\
+HNetBit & 108 & 49 & 377 & 652 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Destaca la baja huella de memoria del modelo recurrente ternario: incluso en el peor caso (batch 8), HNetBit utiliza solo 652 MB, mientras que el transformer requiere 820 MB. Esta eficiencia se debe a la ausencia de cache KV (el estado recurrente es fijo) y a la cuantización ternaria que reduce el ancho de banda de memoria.
+
+\subsection{Análisis del chunking dinámico}
+
+Para el modelo HNetBit de 150M se analizó la evolución de las tasas de compresión del módulo de enrutamiento. Al inicio del entrenamiento, la compresión es extrema (solo se retiene el primer token de cada fragmento). A medida que avanza el entrenamiento, el modelo aprende a identificar límites semánticos: después de 10 000 millones de bytes, la longitud media de los fragmentos en la primera etapa es de 4.2 bytes, y en la segunda etapa de 12.7 bytes. La pérdida de balanceo (\textit{load-balancing loss}) se mantiene por debajo de 0.05 durante todo el entrenamiento, lo que indica que el enrutamiento no colapsa a unos pocos límites.
+
+\subsection{Discusión y limitaciones}
+
+Los resultados confirman la hipótesis de que una arquitectura jerárquica con pesos ternarios puede igualar o superar a un transformer de parámetros no-embedding equivalentes, con una reducción drástica del tamaño en disco y una memoria de inferencia menor. Sin embargo, se identifican varias limitaciones:
+
+\begin{itemize}
+\item \textbf{Entrenamiento sin checkpointing}: El modelo híbrido no soporta \textit{gradient checkpointing}, lo que aumenta el consumo de memoria de entrenamiento (15.5 GB para 150M) y podría limitar el escalado a tamaños mayores sin hardware adicional.
+\item \textbf{Contexto asimétrico}: El transformer ve aproximadamente 5760 bytes por muestra frente a 4096 bytes de los modelos byte-level, lo que le da una ventaja potencial en dependencias de largo alcance. A pesar de ello, el híbrido obtiene mejor BPB, lo que sugiere que su capacidad de compresión jerárquica compensa esta desventaja.
+\item \textbf{Generalización a otros dominios}: Todos los experimentos se realizan únicamente en español. No se evalúa el rendimiento en otros idiomas, código fuente o datos multimodales.
+\item \textbf{Falta de estimación de varianza}: Cada configuración se ejecuta una sola vez con semilla fija, por lo que no se reportan intervalos de confianza.
+\end{itemize}
+
+En conjunto, el modelo HNetBit propuesto demuestra ser una alternativa viable y eficiente a los transformers convencionales para el modelado de lenguaje a nivel de bytes, abriendo la puerta a despliegues en entornos con recursos limitados y a un procesamiento verdaderamente extremo a extremo sin tokenización predefinida.

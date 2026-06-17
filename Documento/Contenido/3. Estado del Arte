@@ -1,0 +1,156 @@
+\section{Estado del Arte}
+\subsection{Modelado de Lenguaje Escalable Libre de Multiplicación de Matrices}
+
+\textcite{Zhu2024} proponen una arquitectura innovadora para Modelos de Lenguaje (LM) que elimina completamente las operaciones de multiplicación de matrices (MatMul), creando lo que se conoce como MatMul-Free LM. Este enfoque surge como respuesta al creciente costo computacional que representa la multiplicación de matrices en modelos que escalan hacia miles de millones de parámetros, a pesar de estar altamente optimizada para GPUs.
+
+La arquitectura Transformer convencional depende fundamentalmente de MatMul en dos áreas clave: las capas densas y los mecanismos de auto-atención. Los autores construyen su modelo MatMul-Free siguiendo el framework Metaformer, descomponiendo el modelo en mezcla de tokens y mezcla de canales. Para reemplazar la auto-atención, implementan una Unidad Recurrente Lineal con Puertas sin MatMul (MLGRU), que utiliza exclusivamente productos elemento a elemento y acumulaciones ternarias. Paralelamente, todas las capas densas se sustituyen con módulos BitLinear que emplean pesos ternarios ($-1, 0, +1$), transformando así las multiplicaciones en simples sumas o restas.
+
+La Figura \ref{fig:loss-flops} presenta un análisis de leyes de escalamiento entre el modelo MatMul-free LM y el Transformer++ estándar, donde el eje $X$ representa el cómputo utilizado durante el entrenamiento medido en FLOPs, mientras que el eje $Y$ representa la pérdida (Loss) del modelo. Las líneas rojas trazan la evolución de la pérdida para los diferentes tamaños del MatMul-free LM (370M, 1.3B y 2.7B de parámetros), y las azules hacen lo propio para los modelos Transformer++ equivalentes; las líneas de ley de escalamiento punteadas extrapolan esta tendencia. Puede observarse que la extrapolación del resultado de MatMul-free LM presenta una pendiente de descenso más pronunciada, y se espera que su curva intersecte y supere el rendimiento del Transformer++ alrededor de los $10^{23}$ FLOPs, sugiriendo que la arquitectura MatMul-Free no solo es más eficiente, sino que puede alcanzar un menor nivel de pérdida al ser escalada a modelos de gran tamaño.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{Recursos/loss-flops.png}
+    \caption[Comparación de ley de escalamiento entre modelos MatMul-Free LM y Transformer++.]{Comparación de ley de escalamiento entre modelos MatMul-Free LM y Transformer++. Tomado de \textcite{Zhu2024}.}
+    \label{fig:loss-flops}
+\end{figure}
+
+La eficiencia en entrenamiento e inferencia se ve notablemente mejorada en GPUs. Una implementación fusionada de BitLinear reduce la memoria de entrenamiento en un 61\% y acelera las iteraciones en un 25.6\%. Durante la inferencia, MatMul-Free LM utiliza significativamente menos memoria y latencia que Transformer++, especialmente a escalas más grandes (por ejemplo, 4.19 GB frente a 48.50 GB para un modelo de 13B).
+
+Además, el modelo se adapta naturalmente a hardware neuromórfico como Loihi 2 de Intel, un chip optimizado para computación escasa, de baja precisión y basada en eventos. Con pesos de 8 bits y activaciones de 16 bits, el modelo mantiene una precisión casi idéntica a la original. En un sistema Loihi multi-chip, alcanza 59.4 tokens/seg a 70.8 mJ/token durante la generación, superando a Jetson Orin Nano por al menos 4$\times$ en rendimiento y 10$\times$ en eficiencia energética.
+
+La Figura \ref{fig:zeroshot-accuracy} presenta una evaluación comparativa del rendimiento en tareas de lenguaje de cero disparos entre el modelo propuesto libre de multiplicación de matrices (MatMul-free LM), denominado ``Ours'', y dos líneas de base: el Transformer++ estándar y el modelo MatMul-free RWKV-4, para tres escalas de parámetros (370M, 1.3B y 2.7B). Las columnas representan las métricas de precisión (\%) en diferentes benchmarks: ARCe (ARC-Easy), ARCc (ARC-Challenge), HS (HellaSwag), OQ (OpenbookQA), PQ (PIQA), WGe (Winogrande) y el promedio (Avg.) de todas ellas. Las filas detallan los resultados para cada modelo y tamaño, mostrando que el modelo MatMul-free LM compite de manera cercana con el Transformer++, observándose que la brecha de rendimiento se reduce a medida que aumenta el tamaño del modelo; por ejemplo, en el modelo de 2.7B parámetros, MatMul-Free LM alcanza un promedio de 49.9\%, muy próximo al 50.7\% del Transformer++, e incluso lo supera en tareas específicas como ARCc (29.7\% frente a 27.4\%) y OQ (35.4\% frente a 34.4\%), lo que demuestra la efectividad de la arquitectura propuesta a pesar de eliminar todas las operaciones de multiplicación de matrices.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{Recursos/zeroshot-accuracy.png}
+    \caption[Precisión zero-shot de modelos MatMulfree LM y Transformer++.]{Precisión zero-shot de modelos MatMulfree LM y Transformer++. Tomado de \textcite{Zhu2024}.}
+    \label{fig:zeroshot-accuracy}
+\end{figure}
+
+Los métodos técnicos implementados son cruciales para este éxito. Las capas densas sin MatMul utilizan pesos ternarios ($-1,0,+1$) que reemplazan la multiplicación por acumulación: para cada valor de peso, la entrada se suma, se omite o se niega, eliminando así la multiplicación en todas las capas densas. La capa BitLinear fusionada combina RMSNorm y cuantización en memoria compartida mediante un kernel especializado, reduciendo la E/S entre HBM y SRAM y optimizando significativamente el tiempo de entrenamiento y uso de memoria.
+
+La arquitectura sin MatMul integra un mezclador de tokens basado en MLGRU, una versión lineal y ternaria de la GRU, que emplea solo productos elemento a elemento y acumulaciones, mientras que el mezclador de canales utiliza una Unidad Lineal con Puertas (GLU) con capas BitLinear. Ambos componentes están completamente libres de MatMul. Para el entrenamiento, se emplea el estimador de paso directo (STE) para manejar la cuantización no diferenciable y tasas de aprendizaje más grandes ($4e-3$ a $1.5e-3$) para evitar que las actualizaciones de pesos sean demasiado pequeñas. Adicionalmente, se utiliza un programador coseno con reducción a mitad del entrenamiento, resultando en una curva de pérdida en forma de S.
+
+En la implementación para Loihi 2, el modelo se cuantiza a pesos de 8 bits y activaciones de 16 bits, utilizando aproximaciones personalizadas de punto fijo para funciones como sigmoide y raíz cuadrada inversa. El modelo se divide estratégicamente entre los neurocores de Loihi 2, aprovechando la ejecución asíncrona y la memoria local para minimizar el consumo energético y la latencia.
+
+En conclusión, el MatMul-Free LM representa un avance significativo hacia modelos de lenguaje eficientes y escalables. Al reemplazar MatMul con operaciones ternarias y productos elemento a elemento, el modelo logra un rendimiento sólido con costos computacionales y energéticos dramáticamente reducidos. Su inherente compatibilidad con hardware neuromórfico subraya aún más su potencial para los futuros sistemas de IA de baja potencia. El código está disponible en: https://github.com/ridgerchu/matmulfreellm.
+
+\subsection{Chunking Dinámico para Modelado Jerárquico de Secuencias de Extremo a Extremo}
+
+\textcite{Hwang2025} proponen H-Net, una arquitectura jerárquica que incorpora un mecanismo de chunking dinámico (DC) para aprender estrategias de segmentación dependientes del contenido y contexto de forma conjunta con el resto del modelo, eliminando así la necesidad de tokenización. El Dynamic Chunking permite que el modelo procese datos brutos, como bytes, aprendiendo automáticamente cómo agruparlos en segmentos significativos sin depender de métodos predefinidos. Este enfoque aborda limitaciones fundamentales en los modelos de lenguaje modernos, donde la tokenización convencional introduce problemas como pobre comprensión a nivel de carácter, falta de adaptabilidad a diferentes lenguajes y modalidades, y sesgos inherentes. Aunque arquitecturas como el Transformer han avanzado hacia el aprendizaje de extremo a extremo, la tokenización sigue siendo un componente artesanal que impide la modelización eficiente de secuencias sin preprocesamiento.
+
+H-Net adopta una arquitectura jerárquica similar a una U-Net autoregresiva, compuesta por tres componentes principales: las redes codificadoras (Encoder), que procesan los datos brutos y comprimen la secuencia; la red principal (Main Network), que opera sobre las representaciones comprimidas (chunks) y puede ser cualquier arquitectura estándar como Transformer, conteniendo la mayor parte de los parámetros; y las redes decodificadoras (Decoder), que reconstruyen la secuencia a su resolución original. La clave de H-Net es su diseño recursivo, donde la red principal puede ser a su vez otra H-Net, permitiendo la construcción de jerarquías multi-nivel que capturan diferentes niveles de abstracción, como de caracteres a palabras y luego a frases.
+
+La Figura \ref{fig:hnet-overview} presenta un resumen arquitectónico de H-Net con un diseño jerárquico de dos etapas ($S=2$). La arquitectura sigue un esquema similar a U-Net, donde los datos brutos de entrada son procesados por las redes codificadoras ($\mathcal{E}^0$ y $\mathcal{E}^1$), que comprimen la secuencia mediante el mecanismo de chunking dinámico. Los chunks resultantes son procesados por la red principal ($\mathcal{M}$), que contiene la mayor parte de los parámetros del modelo y opera sobre secuencias comprimidas. Finalmente, las redes decodificadoras ($\mathcal{D}^1$ y $\mathcal{D}^0$) reconstruyen la secuencia a su resolución original utilizando la información de las conexiones residuales. El chunking dinámico, detallado en la parte derecha de la figura, consiste en un módulo de enrutamiento que predice los límites entre elementos adyacentes basándose en la similitud del coseno, y un downsampler que selecciona los vectores en las posiciones de límite para formar los chunks. Esta arquitectura permite que H-Net aprenda estrategias de segmentación de forma end-to-end, reemplazando la tokenización tradicional.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{Recursos/hnet-overview.png}
+    \caption[Resumen arquitectónico de H-Net.]{Resumen arquitectónico de H-Net. Tomado de \textcite{Hwang2025}.}
+    \label{fig:hnet-overview}
+\end{figure}
+
+Para mejorar la propagación de señales y la estabilidad del entrenamiento en arquitecturas jerárquicas, se introducen varias técnicas clave. El balance de normalización utiliza RMSNorm al final de cada componente de la red para equilibrar las magnitudes de las características entre las etapas jerárquicas y evitar que las señales residuales sean dominadas por las salidas de las redes más profundas. Además, la modulación de la tasa de aprendizaje asigna tasas más altas a las etapas externas, que procesan secuencias más largas, en comparación con las etapas internas, asegurando un entrenamiento equilibrado en toda la jerarquía. Los codificadores y decodificadores se implementan preferentemente con capas Mamba-2 (State Space Models), aprovechando su fuerte sesgo inductivo para la compresión y su eficiencia en el procesamiento de secuencias de grano fino.
+
+La Figura \ref{fig:hnet-validation-bits} muestra la evolución del bits por byte (BPB) de validación durante el entrenamiento para modelos a escalas Large (760M parámetros) y XL (1.3B parámetros), todos equiparados en FLOPs y datos. Las curvas comparan H-Net de 1 y 2 etapas con líneas de base como el Transformer tokenizado con BPE, MambaByte, LlamaByte, SpaceByte, y variantes de H-Net con chunking estático o heurístico. En la escala Large, se observa que H-Net (2-stage) achieve el menor BPB, superando a todos los demás modelos, y en la escala XL, H-Net (2-stage) cruza por debajo del Transformer después de solo 30B bytes de entrenamiento, demostrando una escalabilidad superior con los datos. Las líneas punteadas indican los puntos de cruce donde H-Net supera al Transformer, resaltando la ventaja del chunking dinámico aprendido end-to-end.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{Recursos/hnet-validation-bits.png}
+    \caption[Bits por byte (BPB) de validación durante el entrenamiento.]{Bits por byte (BPB) de validación durante el entrenamiento. Tomado de \textcite{Hwang2025}.}
+    \label{fig:hnet-validation-bits}
+\end{figure}
+
+H-Net representa un avance significativo hacia modelos de lenguaje verdaderamente de extremo a extremo, eliminando la dependencia de la tokenización mediante un mecanismo de chunking dinámico que aprende a segmentar datos brutos de forma adaptativa. Al aprender jerarquías de abstracción de forma recursiva, H-Net no solo iguala sino que supera el rendimiento de los pipelines tokenizados, especialmente a medida que escala en datos y parámetros. Su robustez, interpretabilidad y versatilidad across diferentes lenguajes y modalidades lo posicionan como una arquitectura fundamental prometedora para la próxima generación de modelos de fundación que aprenden más con menos preprocesamiento.
+
+\subsection{La Era de los LLMs de 1 bit: Todos los Modelos de Lenguaje de Gran Tamaño son de 1.58 Bits}
+
+\textcite{Ma2024} proponen BitNet b1.58, un modelo de lenguaje grande donde cada parámetro es ternario, tomando valores en ${-1, 0, +1}$, lo que equivale a 1.58 bits por peso. La motivación surge de la necesidad de reducir el costo computacional, de memoria y energético de los LLM tradicionales en precisión completa, como FP16 o BF16, sin sacrificar su rendimiento. A diferencia de la cuantización posterior al entrenamiento, BitNet b1.58 se entrena desde cero con esta representación de baja precisión, lo que define un nuevo paradigma de computación basado en operaciones enteras en lugar de operaciones de punto flotante.
+
+El artículo propone una arquitectura basada en Transformer que reemplaza las capas lineales estándar por una versión cuantizada denominada BitLinear. Entre las modificaciones clave se incluye una función de cuantización que utiliza un método absmean, el cual escala la matriz de pesos por su valor absoluto promedio y luego redondea cada valor a ${-1, 0, +1}$. Por otro lado, las activaciones se cuantizan a 8 bits y se escalan por token al rango $[-Q_b, Q_b]$, eliminando la necesidad de un punto cero y simplificando la implementación. Además, se adoptan componentes estándar como RMSNorm, SwiGLU, rotary embeddings y se eliminan los sesgos para facilitar la integración con herramientas de código abierto.
+
+En cuanto a los resultados experimentales, los autores comparan BitNet b1.58 con LLaMA en precisión completa bajo las mismas condiciones, incluyendo tamaño del modelo y tokens de entrenamiento. La Figura \ref{fig:bitnet-zeroshot} presenta una evaluación comparativa del rendimiento en tareas de lenguaje de cero disparos entre BitNet b1.58 y LLaMA LLM para tres escalas de parámetros (700M, 1.3B y 3B). Las columnas representan las métricas de precisión (\%) en diferentes benchmarks: ARCe (ARC-Easy), ARCc (ARC-Challenge), HS (HellaSwag), BQ (BoolQ), OQ (OpenbookQA), PQ (PIQA), WGe (Winogrande) y el promedio (Avg.) de todas ellas. Puede observarse que la brecha de rendimiento se reduce a medida que aumenta el tamaño del modelo; en el modelo de 3B parámetros, BitNet b1.58 alcanza un promedio de 50.2\%, superando ligeramente el 49.7\% de LLaMA LLM, e incluso lo supera en tareas específicas como ARCc (28.3\% frente a 25.6\%) y OQ (26.6\% frente a 24.6\%), lo que demuestra la efectividad de la arquitectura propuesta a pesar de emplear pesos ternarios.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\linewidth]{Recursos/bitnet-zeroshot.png}
+\caption[Precisión zero-shot de BitNet b1.58 y LLaMA LLM.]{Precisión zero-shot de BitNet b1.58 y LLaMA LLM. Tomado de \textcite{Ma2024}.}
+\label{fig:bitnet-zeroshot}
+\end{figure}
+
+La Figura \ref{fig:bitnet-perplexity} resume la perplejidad así como el costo en memoria y latencia de BitNet b1.58 y LLaMA LLM. El eje izquierdo presenta la reducción en el consumo de memoria de GPU (GB) y la latencia (ms) por token, mientras que el eje derecho muestra la perplejidad (PPL) en los conjuntos de validación. Las barras rojas trazan la ventaja en memoria y latencia de BitNet b1.58 sobre LLaMA LLM para los diferentes tamaños de modelo (700M, 1.3B y 3B), y las líneas azules representan la perplejidad correspondiente. Se observa que BitNet b1.58 iguala o supera la perplejidad de LLaMA LLM a partir del tamaño de 3B (9.91 frente a 10.04), mientras que reduce la memoria en 3.55 veces (2.22 GB frente a 7.89 GB) y la latencia en 2.71 veces (1.87 ms frente a 5.07 ms). Esta ventaja se acentúa con el escalado, donde el modelo de 70B es 4.1 veces más rápido.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\linewidth]{Recursos/bitnet-perplexity.png}
+\caption[Perplejidad y costo de inferencia de BitNet b1.58 y LLaMA LLM.]{Perplejidad y costo de inferencia de BitNet b1.58 y LLaMA LLM. Tomado de \textcite{Ma2024}.}
+\label{fig:bitnet-perplexity}
+\end{figure}
+
+Respecto a la energía, el consumo en operaciones aritméticas se reduce en 71.4 veces gracias al reemplazo de multiplicaciones FP16 por sumas enteras. En throughput, con 70B de parámetros, BitNet b1.58 soporta un batch size 11 veces mayor y un throughput 8.9 veces superior al de LLaMA.
+
+BitNet b1.58 establece una nueva ley de escalado que relaciona el rendimiento y el costo de inferencia. Por ejemplo, un BitNet b1.58 de 13B es más eficiente que un LLaMA de 3B, y un BitNet b1.58 de 70B es más eficiente que un LLaMA de 13B. Además, al entrenar con 2 billones de tokens, BitNet b1.58 supera a modelos de referencia como StableLM-3B en múltiples benchmarks, demostrando una fuerte capacidad de generalización.
+
+En la discusión y trabajo futuro, los autores identifican varias direcciones prometedoras. Los modelos de Mixture-of-Experts pueden beneficiarse de la reducción de memoria y comunicación entre dispositivos. La reducción de bits en las activaciones permite duplicar la longitud de contexto sin incrementar el uso de memoria, lo que facilita el soporte nativo para secuencias largas. La eficiencia de BitNet b1.58 también posibilita la ejecución en dispositivos edge y móviles con recursos limitados. Finalmente, se propone el diseño de nuevo hardware especializado optimizado para operaciones con 1 bit, similar a lo realizado por Groq con sus LPUs.
+
+En conclusión, BitNet b1.58 representa un avance significativo hacia LLMs más sostenibles y escalables. Al redefinir el paradigma de computación desde operaciones en punto flotante hacia operaciones enteras de 1.58 bits, no solo se iguala el rendimiento de los modelos en precisión completa, sino que se logran mejoras sustanciales en eficiencia. Esto sienta las bases para una nueva generación de modelos de lenguaje más accesibles y aplicables en entornos con restricciones de recursos.
+
+\subsection{SpaceByte: Hacia la Eliminación de la Tokenización en el Modelado de Lenguaje de Gran Tamaño}
+
+\textcite{Slagle2024} propone SpaceByte, una nueva arquitectura byte-level que cierra la brecha de rendimiento entre los modelos basados en bytes y los basados en subpalabras, argumentando que la tokenización, aunque ampliamente utilizada en Modelos de Lenguaje a Gran Escala (LLMs), introduce importantes desventajas como sesgos de rendimiento, vulnerabilidad adversarial, menor rendimiento en modelado a nivel de carácter y complejidad adicional.
+
+SpaceByte es un modelo Transformer a nivel de bytes que incorpora bloques Transformer más grandes, denominados bloques globales, insertados estratégicamente en posiciones específicas de la secuencia, particularmente después de bytes considerados "spacelike" (como espacios), que suelen denotar límites de palabras. Los experimentos controlados por costo computacional muestran que SpaceByte supera a otras arquitecturas basadas en bytes y se equipara en rendimiento con los Transformers tokenizados.
+
+La Figura \ref{fig:spacebyte-arch} presenta un resumen de la arquitectura SpaceByte. En esencia, puede conceptualizarse como un Transformer a nivel de bytes estándar, pero con bloques transformadores "globales" adicionales (con una dimensión de modelo más grande) insertados en medio de las capas, los cuales se aplican solo una fracción del tiempo. Mientras que arquitecturas como MegaByte aplican estos bloques globales cada \(P \sim 8\) bytes de forma fija, SpaceByte utiliza una regla dinámica basada en el contenido del texto. La intuición subyacente es que el primer carácter de una palabra es típicamente más difícil de predecir que los caracteres siguientes; por lo tanto, se espera que el rendimiento mejore aplicando los bloques globales principalmente en los límites de las palabras, donde reside la mayor incertidumbre predictiva.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{Recursos/spacebyte-arch.png}
+    \caption[Resumen arquitectónico de SpaceByte.]{Resumen arquitectónico de SpaceByte. Tomado de \textcite{Slagle2024}.}
+    \label{fig:spacebyte-arch}
+\end{figure}
+
+La Figura \ref{fig:spacebyte-crossentropy} presenta la frontera de Pareto que compara la entropía cruzada (medida en bits por byte) y el costo computacional de inferencia (medido en FLOPs por byte) para las diferentes arquitecturas evaluadas en el conjunto de datos Github, entrenadas con presupuestos de \(10^{18}\) (líneas finas) y \(10^{19}\) (líneas gruesas) FLOPs. Cada punto representa un modelo con diferentes dimensiones y/o número de capas. Puede observarse que SpaceByte (línea roja) supera consistentemente a todas las demás arquitecturas a nivel de bytes en toda la frontera de Pareto para todos los conjuntos de datos. Además, su rendimiento es aproximadamente equivalente al del Transformer con subpalabras que utiliza el tokenizer SentencePiece (línea negra), e incluso lo supera en los conjuntos de datos arXiv y Github. Es notable también que el rendimiento de SpaceByte mejora más rápidamente que el del Transformer con subpalabras a medida que aumenta el presupuesto de entrenamiento. La versión de SpaceByte con parches de tamaño fijo (línea naranja) muestra un rendimiento significativamente inferior, lo que subraya la importancia crítica de la partición dinámica alineada con los límites lingüísticos.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\linewidth]{Recursos/spacebyte-crossentropy.png}
+    \caption[Frontera de Pareto de la entropía cruzada (bits por byte) frente a los FLOPs por byte durante la inferencia para diferentes arquitecturas en el dataset Github.]{Frontera de Pareto de la entropía cruzada (bits por byte) frente a los FLOPs por byte durante la inferencia para diferentes arquitecturas en el dataset Github. Tomado de \textcite{Slagle2024}.}
+    \label{fig:spacebyte-crossentropy}
+\end{figure}
+
+Para una comparación justa, todos los modelos se entrenaron con presupuestos computacionales fijos (\(10^{18}\) o \(10^{19}\) FLOPs) y se evaluaron en términos de bits por byte (BPB) y FLOPs por byte. Los conjuntos de datos incluyeron PG-19 (libros en inglés anteriores a 1919), arXiv (artículos científicos en LaTeX) y Github (código fuente de repositorios públicos). Se compararon múltiples arquitecturas: Transformers a nivel de bytes (base y con ventana de atención), MegaByte (con parches de tamaño fijo), SpaceByte (con parches dinámicos y fijos) y Transformers tokenizados (con tokenizadores GPT-2 y SentencePiece).
+
+Los resultados experimentales demuestran que SpaceByte supera consistentemente a todas las demás arquitecturas basadas en bytes y se equipara con el Transformer tokenizado con SentencePiece, incluso superándolo en los conjuntos de datos arXiv y Github. La versión de SpaceByte con parches de tamaño fijo tiene un rendimiento significativamente peor, lo que resalta la importancia de alinear los bloques globales con los límites lingüísticos. SpaceByte logra un mejor equilibrio entre bits por byte y FLOPs por byte, especialmente en contextos largos, y supera a MegaByte y MambaByte, incluso cuando estos últimos fueron entrenados con más datos y computación. SpaceByte logra los mejores bits por byte en arXiv (0.748) y Github (0.500), y se mantiene competitivo en PG-19 (1.009), siempre dentro del 2.5\% del mejor modelo por conjunto de datos.
+
+Cabe señalar que la regla heurística basada en bytes spacelike funciona bien en textos en inglés, LaTeX y código, pero puede no ser óptima para otros idiomas o modalidades. Por ejemplo, en chino (que no usa espacios entre palabras), el rendimiento de SpaceByte es inferior al de los modelos tokenizados. Además, la naturaleza variable de los parches dinámicos complica la implementación de inferencia en lote eficiente.
+
+Como trabajo futuro, los autores sugieren extender el modelado multiescala a niveles superiores (oraciones, párrafos), integrar bloques Mamba en lugar de Transformers para mayor eficiencia, optimizar la regla de inserción de bloques globales mediante aprendizaje automático en lugar de heurísticas, y mejorar la eficiencia en inferencia con secuencias de longitud variable.
+
+En conclusión, SpaceByte representa un avance significativo hacia la eliminación de la tokenización en LLMs. Al introducir un modelado multiescala dinámico que alinea el procesamiento global con los límites lingüísticos naturales, logra un rendimiento competitivo con los modelos tokenizados, al tiempo que evita sus desventajas inherentes. Esto sienta las bases para LLMs más robustos, eficientes y menos sesgados en el futuro.
+
+\subsection{MEGABYTE: Prediciendo Secuencias de Millones de Bytes con Transformers Multiescala}
+
+\textcite{Yu2023} proponen MegaByte, una arquitectura de decodificador multiescala que permite el modelado diferenciable de secuencias de más de un millón de bytes. MegaByte divide las secuencias en parches y utiliza un modelo local dentro de cada parche y un modelo global entre parches. Esto permite autoatención subcuadrática, capas feedforward más grandes para el mismo coste computacional y un mayor paralelismo durante la generación. Una ventaja clave de MegaByte es que opera a nivel de bytes, eliminando la necesidad de tokenización, lo que simplifica el preprocesamiento y evita problemas de generalización a nuevos dominios o modos.
+
+La Figura \ref{fig:megabyte-arch} ilustra la arquitectura de MegaByte con un tamaño de parche \(P=4\). La secuencia de entrada se divide en parches de \(P\) bytes, cada uno de los cuales es embedido y luego procesado por el modelo global. El modelo global, un transformador autoregresivo, contextualiza las representaciones de los parches anteriores y produce una salida que se proyecta y combina con los embeddings de los bytes anteriores para alimentar el modelo local. El modelo local, a su vez, es un transformador más pequeño que predice autoregresivamente cada byte dentro del parche, condicionado por la salida del modelo global. Esta arquitectura permite una autoatención subcuadrática, ya que el modelo global opera sobre una secuencia de \(T/P\) parches, reduciendo la complejidad a \(O(T^{4/3})\) cuando \(P = T^{1/3}\). Además, las capas feedforward se aplican a nivel de parche, lo que permite utilizar capas más grandes y expresivas sin incrementar el coste computacional. Durante la generación, el modelo global puede producir representaciones de múltiples parches en paralelo, reduciendo las operaciones seriales y acelerando la inferencia.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{Recursos/megabyte-arch.png}
+    \caption[Resumen arquitectónico de MegaByte con $P=4$.]{Resumen arquitectónico de MegaByte con $P=4$. Tomado de \textcite{Yu2023}}
+    \label{fig:megabyte-arch}
+\end{figure}
+
+La Figura \ref{fig:megabyte-bpb} presenta una evaluación comparativa del rendimiento de MegaByte frente a dos líneas base, Transformer y PerceiverAR, en cinco conjuntos de datos de texto largo: PG-19, Stories, Books, arXiv y Code. La métrica reportada es bits por byte (bpb), donde un valor más bajo indica mejor desempeño. Puede observarse que MegaByte supera consistentemente a ambos baselines en todos los conjuntos de datos, logrando el menor bpb en cada uno de ellos. Por ejemplo, en el dataset de Code, MegaByte alcanza un bpb de 0.411, mientras que Transformer y PerceiverAR obtienen 0.575 y 0.546 respectivamente. Estos resultados demuestran la efectividad de la arquitectura multiescala de MegaByte para el modelado de lenguaje a nivel de bytes, sin necesidad de tokenización.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{Recursos/megabyte-bpb.png}
+    \caption[Rendimiento en bit por byte según dataset.]{Rendimiento en bit por byte según dataset. Tomado de \textcite{Yu2023}}
+    \label{fig:megabyte-bpb}
+\end{figure}
+
+En el análisis y ablaciones, se identifican componentes críticos: la eliminación del modelo local o global degrada significativamente el rendimiento, confirmando que ambos son esenciales. Para mitigar la caída de rendimiento al final de cada parche, se propone una inferencia strideada con dos pasadas desplazadas, mejorando el bpb a costa de duplicar el coste. El rendimiento es robusto a variaciones en el tamaño del parche, aunque el óptimo varía según la modalidad. También es beneficioso asignar más parámetros al modelo global que al local.
+
+MegaByte establece un nuevo paradigma para el modelado autoregresivo de secuencias largas a nivel de bytes, eliminando la necesidad de tokenización y ofreciendo ventajas en eficiencia, escalabilidad y generalidad. Sus resultados competitivos en texto, imágenes y audio sugieren que los modelos basados en bytes pueden rivalizar con los basados en tokens, abriendo la puerta a futuros modelos de lenguaje totalmente libres de tokenización. Sin embargo, los experimentos realizados están aún por debajo de la escala de los modelos de lenguaje más grandes, por lo que un futuro trabajo debería explorar el escalado de MegaByte a modelos y conjuntos de datos masivos.

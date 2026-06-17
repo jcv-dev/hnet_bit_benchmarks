@@ -1,0 +1,3 @@
+Model,Size,BPB_Final,Best_Val_BPB,Final_Val_BPB,Best_Val_Loss,Final_Val_Loss,Val_BPB_at_25B,Inference_Memory_MB,Param_Count_M,Non_Emb_Params_M,Disk_Size_MB,Deploy_Size_MB,Bits_Per_Param,Peak_Training_Memory_MB,Peak_Reserved_Memory_MB,Overall_Compression_Ratio,Best_Train_Loss,Final_Train_Loss,Train_Steps,Peak_Tok_Per_Sec,Avg_Tok_Per_Sec,Training_Time_Hours,LR,Batch_Size,Grad_Accum,Total_Bytes,Seq_Length
+hybrid,150M,1.6221,1.6169,1.6169,1.1208,1.1208,1.6169,1726.0,138.3,138.0,263.9,37.9,2.29,15453.0,18136.0,0.3146,0.747,0.9196,190730,86416.8,86076.1,80.57,0.004,4,8,25000000000,4096
+transformer,150M,1.4837,1.4999,1.4999,3.2837,3.2837,1.4999,3279.8,190.5,113.3,363.3,726.6,32.0,6717.0,8508.0,,2.3284,2.9373,193240,171273.4,170893.6,40.32,0.0003,4,8,25000000000,1280

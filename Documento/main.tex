@@ -1,0 +1,193 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Uppsala University Assignment Title Page 
+% LaTeX Template
+% Version 1.0 (27/12/12)
+%
+% This template has been downloaded from:
+% http://www.LaTeXTemplates.com
+%
+% Original author:
+% WikiBooks (http://en.wikibooks.org/wiki/LaTeX/Title_Creation)
+% Modified by Elsa Slattegard to fit Uppsala university
+% License:
+% CC BY-NC-SA 3.0 (http://creativecommons.org/licenses/by-nc-sa/3.0/)
+
+%\title{Title page with logo}
+%----------------------------------------------------------------------------------------
+%	PACKAGES AND OTHER DOCUMENT CONFIGURATIONS
+%----------------------------------------------------------------------------------------
+
+\documentclass[12pt]{article}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage[utf8x]{inputenc}
+\usepackage{csquotes}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hanging}
+\usepackage{parskip}
+\usepackage{amssymb}      % para \mathbb{R}
+\usepackage{mathabx}
+\usepackage{svg}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{makecell}
+\usepackage[backend=biber, style=apa]{biblatex}
+\addbibresource{bibliography.bib}
+\usepackage{caption}
+\usepackage{multirow}
+\captionsetup{labelsep=period}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks,
+    linkcolor={black!50!black},
+    citecolor={blue!50!black},
+    urlcolor={blue!80!black}
+}
+\usepackage[table]{xcolor}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{tocloft}
+
+\renewcommand{\cftfigpresnum}{\bfseries Figura~}
+\renewcommand{\cftfigaftersnum}{.\hspace{0.5em}}
+\newlength{\mylength}
+\settowidth{\mylength}{\cftfigpresnum\cftfigaftersnum}
+\addtolength{\cftfignumwidth}{\mylength}
+\setlength{\cftfignumwidth}{2.2cm}  % Ajusta este valor para el espaciado
+
+\makeatletter
+\renewenvironment{abstract}{%
+    \if@twocolumn
+      \section*{\abstractname}%
+    \else %% <- here I've removed \small
+      \begin{center}%
+        {\bfseries \Large\abstractname\vspace{\z@}}%  %% <- here I've added \Large
+      \end{center}%
+      \quotation
+    \fi}
+    {\if@twocolumn\else\endquotation\fi}
+\makeatother
+
+
+\begin{document}
+
+\begin{titlepage}
+
+\newcommand{\HRule}{\rule{\linewidth}{0.5mm}} % Defines a new command for the horizontal lines, change thickness here
+
+\center % Center everything on the page
+ 
+%----------------------------------------------------------------------------------------
+%	HEADING SECTIONS
+%----------------------------------------------------------------------------------------
+
+\textsc{\LARGE Universidad del Valle}\\[0.5cm] % Name of your university/college
+\includegraphics[width=3cm]{Recursos/420px-Univalle.svg.png}\\[0.5cm] % Include a department/university logo - this will require the graphicx package
+\textsc{\Large Trabajo Profesional}\\[0cm] % Major heading such as course name
+\textsc{\large }\\[0cm] % Minor heading such as course title
+
+%----------------------------------------------------------------------------------------
+%	TITLE SECTION
+%----------------------------------------------------------------------------------------
+
+\HRule \\[0.4cm]
+{ \Large \bfseries Implementación y Evaluación Experimental de un Modelo de Lenguaje Basado en Arquitecturas MatMul-Free y Chunking Dinámico}\\[0cm] % Title of your document
+\HRule \\[1.5cm]
+ 
+%----------------------------------------------------------------------------------------
+%	AUTHOR SECTION
+%----------------------------------------------------------------------------------------
+
+\begin{minipage}{0.6\textwidth}
+\begin{center} \large
+Juan Camilo Valencia Rivas\\
+juan.valencia.rivas@correounivalle.edu.co
+\end{center}
+
+\end{minipage}\\[1cm]
+
+\begin{minipage}{0.6\textwidth}
+\begin{center} \large
+\emph{Director:}\\
+Oscar Fernando Bedoya Leiva, PhD.
+\end{center}
+
+\end{minipage}\\[1cm]
+
+\begin{minipage}{0.6\textwidth}
+\begin{center} \large
+\emph{Co-director:}\\
+Raúl Ernesto Gutiérrez de Piñerez, PhD.
+\end{center}
+
+\end{minipage}\\[1cm]
+
+\vfill
+
+\begin{minipage}{0.8\textwidth}
+\begin{center} \large
+Universidad del Valle\\
+Facultad de Ingeniería\\
+Escuela de Ingeniería de Sistemas y Computación\\
+Programa Académico de Ingeniería de Sistemas\\
+Cali, 2026
+\end{center}
+\end{minipage}\\
+
+
+\end{titlepage}
+
+\begin{abstract}
+Los Grandes Modelos de Lenguaje (LLMs) basados en arquitecturas Transformer convencionales enfrentan limitaciones estructurales significativas que comprometen su escalabilidad y versatilidad. Estas limitaciones se manifiestan principalmente en dos dimensiones: el costo computacional prohibitivo asociado a las operaciones de multiplicación de matrices (MatMul) y la dependencia crítica de procesos de tokenización que introducen sesgos lingüísticos y obstaculizan el procesamiento eficiente de secuencias no convencionales. Este trabajo de grado aborda estas problemáticas mediante el diseño, implementación y evaluación de una arquitectura innovadora que integra sinérgicamente dos paradigmas emergentes: modelos MatMul-Free y mecanismos de Dynamic Chunking. La arquitectura propuesta elimina completamente las operaciones MatMul mediante la implementación de pesos ternarios (-1, 0, +1) y operaciones elemento a elemento, reduciendo drásticamente los requerimientos computacionales y energéticos. Paralelamente, incorpora un sistema de chunking dinámico multi-nivel que permite el aprendizaje automático de estrategias de segmentación adaptativa, eliminando la necesidad de tokenización predefinida y facilitando el procesamiento directo de secuencias de bytes crudos. La evaluación comprehensiva del modelo se realizará mediante un benchmark multi-dominio que incluye texto natural (español/inglés), código fuente y notación matemática, utilizando métricas estandarizadas de precisión (perplexity, accuracy), eficiencia computacional (FLOPs, memoria, latencia) y consumo energético. Los resultados obtenidos en trabajos seminales sugieren que esta integración sinérgica permitiría alcanzar un rendimiento competitivo con arquitecturas Transformer tradicionales, ofreciendo a su vez ventajas significativas en eficiencia computacional y capacidad de generalización a través de dominios estructuralmente diversos, estableciendo así las bases para LLMs más sostenibles y versátiles.
+\end{abstract}
+
+\newpage
+
+\begin{center}
+    \tableofcontents
+\end{center}
+
+
+\newpage
+
+\begin{center}
+    \listoffigures
+\end{center}
+
+\newpage
+
+\input{Contenido/1. Introducción}
+
+\input{Contenido/2. Marco Referencial}
+
+\input{Contenido/3. Estado del Arte}
+
+\input{Contenido/4. Arquitectura}
+
+\input{Contenido/5. Optimizaciones}
+
+\input{Contenido/6. Modelos y Método Experimental}
+
+\input{Contenido/7. Resultados}
+
+\input{Contenido/8. Discusión}
+
+\input{Contenido/9. Conclusiones}
+
+\input{Contenido/10. Trabajo Futuro}
+
+\clearpage
+\newpage
+\nocite{*}
+\section*{Referencias}
+\addcontentsline{toc}{section}{\protect\numberline{}Referencias}
+\printbibliography[heading=none]
+
+\end{document}

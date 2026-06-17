@@ -1,0 +1,68 @@
+\section{Introducción}
+
+Los Grandes Modelos de Lenguaje (LLMs) han demostrado capacidades transformadoras en el procesamiento de secuencias multimodales, convirtiéndose en componentes fundamentales para aplicaciones que van desde la generación de texto hasta el análisis de código y secuencias biológicas. No obstante, su arquitectura convencional basada en Transformers presenta dos limitaciones fundamentales que obstaculizan su escalabilidad y versatilidad: un alto costo computacional, impulsado principalmente por las operaciones de multiplicación de matrices (MatMul), y una dependencia crítica de la tokenización, que introduce sesgos lingüísticos y obstaculiza el procesamiento eficiente de \textit{inputs} no convencionales como lenguajes pictográficos, código de programación o secuencias de ADN.
+
+En respuesta al desafío computacional, han emergido arquitecturas innovadoras como el MatMul-Free LM \parencite{Zhu2024}, que elimina completamente las operaciones MatMul reemplazándolas con pesos ternarios y operaciones elemento a elemento, logrando una drástica reducción en el consumo energético y de memoria. Adicionalmente, los recientes avances en modelos de baja precisión, como BitNet b1.58 \parencite{Ma2024}, demuestran que es posible entrenar modelos de lenguaje donde cada parámetro es ternario ($-1$, $0$, $+1$), equivalente aproximadamente a 1.58 bits por peso. Este enfoque no solo reduce drásticamente los requerimientos de memoria y energía, sino que mantiene un rendimiento comparable al de modelos en precisión completa, estableciendo un nuevo paradigma de computación basado en operaciones enteras.
+
+Paralelamente, para abordar las limitaciones impuestas por la tokenización, modelos como H-Net \parencite{Hwang2025} incorporan un mecanismo de \textit{Dynamic Chunking}, permitiendo un modelado jerárquico de extremo a extremo que aprende a segmentar secuencias de bytes crudos de forma adaptativa. Esto elimina la necesidad de una tokenización predefinida, facilitando el procesamiento de dominios con estructuras no lingüísticas donde los tokenizadores tradicionales fallan en capturar relaciones significativas.
+
+Este trabajo propone diseñar e implementar un marco experimental modular que facilite el desarrollo entrenamiento, inferencia y afinamiento y evaluación de SLMs bajo diversas estrategias de eficiencia, proveyendo un enfoque más robusto ante las arquitecturas convencionales existentes.
+
+\subsection{Planteamiento del Problema}
+
+\subsubsection{Descripción del Problema}
+
+La arquitectura Transformer, fundamento de los modelos de lenguaje actuales, presenta dos limitaciones estructurales que comprometen su eficiencia y capacidad de generalización: las operaciones de multiplicación de matrices (MatMul) y los procesos de tokenización. 
+
+Las operaciones MatMul constituyen el principal cuello de botella computacional, demandando un consumo excesivo de energía y memoria que se acentúa en modelos que escalan a miles de millones de parámetros. Esta limitación no solo restringe la implementación en entornos con recursos computacionales limitados, sino que también afecta la sostenibilidad y accesibilidad de los LLMs.
+
+Paralelamente, la tokenización introduce una capa de preprocesamiento que fragmenta las secuencias de entrada en unidades discretas basadas en estadísticas de corpus lingüísticos. Este enfoque, aunque efectivo para lenguaje natural, resulta inadecuado para dominios con estructuras no lingüísticas como código fuente, secuencias de ADN o sistemas simbólicos, donde la división de unidades semánticamente relevantes genera pérdida de información estructural y rendimiento subóptimo.
+
+La conjunción de estas dependencias, MatMul y tokenización, limita tanto la eficiencia computacional como la versatilidad de los LLMs actuales. Superar este desafío dual requiere replantear los fundamentos arquitectónicos, explorando alternativas que eliminen las multiplicaciones de matrices y prescindan de la tokenización tradicional, sin comprometer el rendimiento ni la escalabilidad del modelo.
+
+\subsubsection{Formulación del Problema}
+
+El problema central que aborda este trabajo es la dependencia estructural de los LLMs en dos mecanismos fundamentales que limitan su eficiencia y versatilidad: las operaciones de multiplicación de matrices (MatMul) y los procesos de tokenización. Estas limitaciones no solo imponen barreras computacionales y energéticas, sino que restringen la capacidad de los modelos para aprender representaciones verdaderamente de extremo a extremo sobre diversos tipos de secuencias.
+
+Para superar estos obstáculos, es necesario desarrollar una arquitectura alternativa de LLM que integre enfoques innovadores en modelado eficiente y procesamiento directo de datos brutos. En particular, este trabajo propone combinar los principios de los modelos MatMul-Free, que reemplazan las multiplicaciones de matrices con operaciones elementales y pesos ternarios cuantizados a 1.58 bits, con el mecanismo de Dynamic Chunking, que permite el aprendizaje automático de estrategias de segmentación sin requerir tokenización previa. La integración sinérgica de estos enfoques busca no solo reducir drásticamente el costo computacional y energético, sino también ampliar la capacidad del modelo para procesar secuencias con estructuras no lingüísticas o de naturaleza diversa.
+
+La pregunta de investigación que guía este trabajo es: ¿cómo diseñar e implementar una arquitectura de LLM que, mediante la integración de mecanismos MatMul-Free y Dynamic Chunking, logre un rendimiento competitivo en tareas de modelado de lenguaje con un costo computacional sustancialmente reducido y una capacidad mejorada para procesar secuencias no tokenizables?
+
+La hipótesis central sostiene que la combinación de una arquitectura libre de multiplicaciones de matrices con cuantización a 1.58 bits y un mecanismo de segmentación dinámica permitirá construir modelos más eficientes, escalables y versátiles. Esta aproximación podría sentar las bases para una nueva generación de LLMs capaces de aprender directamente de datos crudos, sin depender de procesos de tokenización manuales, ofreciendo además un desempeño comparable o superior al de las arquitecturas Transformer tradicionales.
+
+\subsection{Justificación del Problema}
+
+\subsubsection{Justificación Académica}
+Este trabajo representa una contribución fundamental al campo emergente de los modelos de lenguaje eficientes al abordar sistemáticamente dos limitaciones estructurales de los Transformers convencionales. La integración sinérgica de arquitecturas MatMul-Free con mecanismos de Dynamic Chunking establece un nuevo paradigma para el desarrollo de LLMs sostenibles y verdaderamente end-to-end. Académicamente, este proyecto avanza en la comprensión teórica de las leyes de escalabilidad en arquitecturas libres de MatMul, extendiendo el trabajo fundacional existente al incorporar mecanismos de segmentación adaptativa. Explora formalmente los límites del modelado sin tokenización mediante el análisis comparativo de estrategias de chunking dinámico frente al estático, y establece comparaciones rigurosas para evaluar el rendimiento de modelos eficientes en dominios no convencionales como código fuente, secuencias biológicas y notación matemática, llenando un vacío significativo en las tecnologías existentes.
+
+\subsubsection{Justificación Social}
+La democratización del acceso a tecnologías de IA avanzadas requiere eliminar las barreras computacionales y energéticas que actualmente concentran estas capacidades en organizaciones con recursos significativos. Al desarrollar arquitecturas sustancialmente más eficientes, este trabajo promueve activamente la accesibilidad a LLMs potentes para instituciones educativas con presupuestos limitados, investigadores en países en desarrollo y desarrolladores de aplicaciones en dispositivos de bajo consumo. La capacidad inherente de procesar secuencias no lingüísticas como ADN, lenguajes simbólicos tradicionales o notaciones científicas especializadas amplía considerablemente el impacto social hacia dominios críticos como la bioinformática, preservación digital de contenidos en riesgo, análisis de código legacy en sistemas heredados, y educación STEM en contextos de recursos limitados. Este enfoque se alinea con los objetivos de desarrollo sostenible al reducir la huella de carbono de las tecnologías de IA mientras expande sus aplicaciones benéficas para la sociedad en su conjunto.
+
+\subsubsection{Justificación Económica}
+Los costos exponenciales asociados al entrenamiento e inferencia de LLMs tradicionales representan una barrera económica insorteable para muchas organizaciones. Este proyecto aborda este desafío de manera integral al lograr una reducción en el consumo energético de los LLMs mediante la sustitución completa de operaciones MatMul por alternativas basadas en operaciones elemento a elemento y acumulaciones ternarias, combinada con una disminución de $3-4\times$ que permite el despliegue de modelos más grandes en hardware convencional. Adicionalmente, elimina los costos operativos asociados al desarrollo, mantenimiento y actualización de tokenizadores especializados para diferentes dominios. Para empresas y organizaciones que dependen de procesamiento de lenguaje a escala industrial, estos avances pueden traducirse en ahorros operativos del orden de millones de dólares anuales en infraestructura computacional, mientras se mantienen las capacidades funcionales. La eficiencia mejorada resultante permite nuevos modelos de negocio basados en inferencia en dispositivos de bajo consumo y aplicaciones en tiempo real previamente inviables, creando oportunidades económicas en sectores donde los costos computacionales actualmente limitan la innovación.
+
+\subsection{Objetivos}
+
+\subsubsection{Objetivo General}
+Implementar y evaluar experimentalmente una arquitectura base de SLM, basada en enfoques MatMul-Free y cuantización ternaria, con el fin de analizar su viabilidad computacional y su comportamiento en tareas básicas de modelado de lenguaje sobre un conjunto acotado de datos textuales.
+
+\subsubsection{Objetivos Específicos}
+\begin{enumerate}
+    \item Implementar una versión simplificada de un SLM eficiente, basada en una arquitectura MatMul-Free con pesos ternarios.
+    
+    \item Realizar un conjunto reducido de experimentos de entrenamiento e inferencia sobre un dominio específico de texto natural, empleando datasets públicos de tamaño controlado.
+    
+    \item Evaluar el modelo implementado mediante métricas básicas de rendimiento y métricas de eficiencia computacional.
+
+\end{enumerate}
+
+\subsection{Resultados Obtenidos}
+
+POR LLENAR
+
+\subsection{Alcance}
+Este trabajo de grado se centrará en el diseño, implementación y evaluación de una arquitectura eficiente para SLMs que integre de manera sinérgica los principios de modelos MatMul-Free, cuantización a 1.58 bits y el mecanismo de Dynamic Chunking. El alcance abarca la implementación de una arquitectura base libre de multiplicaciones de matrices utilizando pesos ternarios y operaciones elemento a elemento, así como la integración de un sistema de segmentación adaptativa que permita el procesamiento directo de secuencias de bytes sin dependencia de tokenizadores predefinidos.
+
+El benchmark de evaluación incluirá como dominio representativo el texto natural (español), pero no se extenderá a otros dominios como audio, imágenes o video.
+
+Metodológicamente, el proyecto se restringirá a técnicas de modelado \emph{in silico}, utilizando datasets públicos y herramientas de código abierto. Si bien se evaluará la eficiencia computacional, no se incluirá el desarrollo de hardware especializado ni la implementación en dispositivos de bajo consumo específicos, aunque se analizará su potencial viabilidad. El entrenamiento y la evaluación se realizarán utilizando infraestructura computacional accesible, sin contemplar el escalado a modelos de centenares de miles de millones de parámetros.

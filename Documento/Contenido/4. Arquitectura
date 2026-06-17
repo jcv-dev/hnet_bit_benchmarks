@@ -1,0 +1,105 @@
+\section{Arquitectura del modelo HNetBit}
+
+En esta sección se describe en detalle la arquitectura del modelo híbrido propuesto, denominado HNetBit, que constituye el núcleo de esta investigación. La exposición se organiza desde los componentes más básicos hasta el sistema completo, destacando las innovaciones en cuantización ternaria, recurrencia HGRN y chunking dinámico jerárquico.
+
+\subsection{Cuantización ternaria y capa BitLinear}
+
+Todas las proyecciones lineales del modelo (con excepción de la tabla de embeddings y la proyección residual de cada etapa) utilizan la capa \texttt{BitLinear}, que reemplaza las multiplicaciones de punto flotante por operaciones de acumulación ternaria. La cuantización se aplica tanto a los pesos como a las activaciones durante el paso forward, manteniendo los pesos completos en el backward mediante el estimador de paso directo (STE).
+
+\subsubsection{Cuantización de pesos}
+
+Dada una matriz de pesos $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$, el proceso de cuantización ternaria es:
+
+\[
+\alpha = \frac{1}{\text{mean}(|W|)} \quad \text{(valor escalar por tensor)},
+\]
+\[
+W_q = \frac{\text{round\_clamp}(W \cdot \alpha, -1, 1)}{\alpha},
+\]
+
+donde $\text{round\_clamp}$ redondea al entero más cercano y luego limita al rango $[-1, 1]$. El resultado $W_q$ contiene únicamente los valores $\{-\alpha, 0, +\alpha\}$. Durante el entrenamiento, se aplica STE:
+
+\[
+W_{\text{forward}} = W_q, \qquad 
+\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial W_q} \quad \text{(identidad)}.
+\]
+
+\subsubsection{Cuantización de activaciones}
+
+Las activaciones de entrada a cada BitLinear se normalizan con RMSNorm y luego se cuantizan a 8 bits por token:
+
+\[
+x_{\text{norm}} = \text{RMSNorm}(x), \quad
+\beta = \frac{127}{\max(|x_{\text{norm}}|)}, \quad
+x_q = \frac{\text{round\_clamp}(x_{\text{norm}} \cdot \beta, -128, 127)}{\beta}.
+\]
+
+Esta cuantización simétrica (sin punto cero) simplifica la implementación en hardware y mantiene la precisión suficiente para la tarea de modelado de lenguaje.
+
+\subsection{Recurrencia HGRN (\textit{Hierarchically Gated Recurrent Network})}
+
+El modelo utiliza HGRN como mecanismo de mezcla de secuencia en lugar de atención. La recurrencia se define como:
+
+\[
+\begin{aligned}
+f_t &= \sigma\bigl(\text{BitLinear}_f(x_t)\bigr) \in (0,1)^d, \\
+i_t &= \text{SwiGLU}\bigl(\text{BitLinear}_i(x_t),\; \mathbf{1} - f_t\bigr), \\
+h_t &= f_t \odot h_{t-1} + i_t, \\
+o_t &= \text{FusedRMSNormSwishGate}\bigl(\text{BitLinear}_g(x_t),\; h_t\bigr).
+\end{aligned}
+\]
+
+La operación $\odot$ denota el producto de Hadamard. El estado oculto $h_t \in \mathbb{R}^d$ tiene tamaño fijo, lo que otorga a la recurrencia complejidad $O(L)$ en entrenamiento y $O(1)$ por paso en inferencia. Para acelerar el entrenamiento en GPU, se implementan dos kernels Triton:
+
+\begin{itemize}
+\item \texttt{fused\_recurrent\_hgrn}: recorre la secuencia secuencialmente pero paraleliza a través de la dimensión de cabezas.
+\item \texttt{chunk\_hgrn}: divide la secuencia en fragmentos de 64 pasos, procesa intra-fragmento en paralelo y luego combina estados entre fragmentos. Este es el kernel utilizado por defecto para secuencias largas.
+\end{itemize}
+
+\subsection{Chunking dinámico multi-etapa}
+
+La jerarquía HNetBit reduce la longitud de la secuencia en cada etapa mediante un mecanismo de chunking aprendido. Para una etapa $s$ con entrada $H \in \mathbb{R}^{B \times L \times D_s}$, el proceso es:
+
+\begin{enumerate}
+\item \textbf{Codificación}: $H_{\text{enc}} = \text{Stack}_{\text{enc}}(H)$ (múltiples bloques HGRNBitBlock).
+\item \textbf{Enrutamiento}: Se calcula la similitud coseno entre tokens consecutivos después de una proyección:
+\[
+q_t = \text{normalize}\bigl(\text{BitLinear}_q(H_{\text{enc}}[t])\bigr),\quad
+k_{t+1} = \text{normalize}\bigl(\text{BitLinear}_k(H_{\text{enc}}[t+1])\bigr),
+\]
+\[
+p_t = \frac{1 - \langle q_t, k_{t+1} \rangle}{2} \in [0,1].
+\]
+La probabilidad $p_t$ indica cuán probable es que exista un límite de chunk entre $t$ y $t+1$. La primera posición se fuerza como límite ($p_0=1$). La máscara binaria $m_t = \text{argmax}([1-p_t, p_t])$ se obtiene mediante una operación no diferenciable, pero el gradiente fluye a través de $p_t$ gracias al STE en la conexión residual posterior.
+\item \textbf{Chunking}: Se seleccionan las posiciones donde $m_t=1$, extrayendo un tensor $H_{\text{chunk}} \in \mathbb{R}^{B \times M \times D_s}$ con $M \ll L$.
+\item \textbf{Red principal}: Si la etapa no es la más interna, $H_{\text{chunk}}$ se procesa recursivamente por una instancia de HNetBit de la siguiente etapa; si es la más interna, se procesa por un \texttt{HGRNBitStack} adicional.
+\item \textbf{Dechunking}: Se reconstruye la secuencia original utilizando una media móvil exponencial:
+\[
+\text{out}_t = p_t \cdot \text{expandido}_t + (1-p_t) \cdot \text{out}_{t-1},
+\]
+donde $\text{expandido}_t$ es el vector del chunk correspondiente a la posición $t$.
+\item \textbf{Decodificación}: $H_{\text{out}} = \text{Stack}_{\text{dec}}( \text{out} \cdot \text{STE}(p) + H_{\text{res}} )$, donde $H_{\text{res}}$ es una proyección residual full-precision inicializada a cero.
+\end{enumerate}
+
+Este diseño permite que el modelo aprenda a segmentar el texto en unidades cada vez más abstractas (caracteres $\rightarrow$ subpalabras $\rightarrow$ palabras $\rightarrow$ frases) de forma completamente end-to-end, sin tokenizador predefinido.
+
+\subsection{Arquitectura global del modelo de lenguaje causal}
+
+La clase \texttt{HNetBitForCausalLM} integra todos los componentes anteriores. Su estructura jerárquica se define mediante dos arreglos configurables:
+
+\begin{itemize}
+\item \texttt{d\_model}: lista de dimensiones por etapa. Ejemplo: $[576, 768]$ para 150M (una etapa de chunking).
+\item \texttt{num\_blocks}: lista de listas que especifican el número de bloques HGRNBitBlock en cada subcomponente. Para una etapa no interna: $[\text{\#encoder}, 0, \text{\#decoder}]$; la etapa más interna recibe un solo entero.
+\end{itemize}
+
+El paso forward completo para una entrada $X$ de bytes es:
+
+\[
+\begin{aligned}
+H_0 &= \text{Embedding}(X) && \in \mathbb{R}^{B \times L \times d_0}, \\
+H_0, \_ &= \text{HNetBit}(H_0, \text{stage}=0), \\
+\text{logits} &= \text{BitLinear}_{\text{LM}}(H_0) && \in \mathbb{R}^{B \times L \times 256}.
+\end{aligned}
+\]
+
+Durante la generación autorregresiva, se mantiene una caché recursiva \texttt{HNetBitCache} que almacena los estados recurrentes de cada bloque HGRN y los valores EMA del dechunking, permitiendo un paso de inferencia en $O(\text{profundidad})$ sin recomputación.

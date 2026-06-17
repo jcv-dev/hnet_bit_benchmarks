@@ -1,0 +1,134 @@
+\section{Modelos y método experimental}
+
+\subsection{Conjunto de datos}
+
+El conjunto de datos utilizado corresponde al \textit{Spanish Billion Words}, disponible en HuggingFace bajo el identificador \texttt{jhonparra18/spanish\_billion\_words\_clean}. Este corpus contiene aproximadamente 8.7 GB de texto comprimido, que se expanden a unos 25 000 millones de bytes de texto plano. El contenido abarca fuentes diversas (noticias, artículos académicos, páginas web) en español, lo que proporciona una base realista para el entrenamiento de modelos de lenguaje en este idioma.
+
+Para garantizar la reproducibilidad, el corpus se divide en entrenamiento (95\,\%) y validación (5\,\%) de manera contigua, tomando el último 5\,\% del archivo como conjunto de validación. No se aplica mezcla (\textit{shuffle}) para preservar la coherencia temporal y evitar fugas de información.
+
+El procesamiento varía según la arquitectura:
+\begin{itemize}
+\item Para los modelos basados en bytes (\texttt{matmulfree}, \texttt{hybrid}, \texttt{hybrid\_attn}) se utiliza directamente la codificación UTF-8, resultando en un vocabulario fijo de 256 símbolos. La longitud de secuencia se fija en 4096 bytes.
+\item Para el modelo \texttt{transformer} se emplea el tokenizador Byte-Pair Encoding (BPE) de GPT-2, con un vocabulario de 50 257 tokens. La longitud de secuencia se fija en 1280 tokens, lo que equivale aproximadamente a 5760 bytes, para igualar el presupuesto de bytes por paso.
+\end{itemize}
+
+La construcción de los datasets se realiza una sola vez y se almacena en memoria mapeada (\texttt{data/spanish/}) para acelerar las cargas posteriores. El proceso de tokenización BPE se ejecuta en procesos hijos independientes para controlar el consumo de RAM, reciclando los trabajadores cada 50 fragmentos.
+
+\subsection{Arquitecturas implementadas}
+
+Se implementan cuatro arquitecturas, todas ellas decodificadoras autorregresivas con el mismo presupuesto de entrenamiento de 25 000 millones de bytes.
+
+\subsubsection{Transformer (línea base)}
+
+Modelo estándar de tipo Llama, con atención multi-cabeza, normalización RMSNorm y función de activación SwiGLU. Se utiliza la implementación de Hugging Face \texttt{transformers} con pesos en FP16. Las configuraciones para los tres tamaños (150M, 350M, 750M) se presentan en la Tabla~\ref{tab:transformer_configs}.
+
+\begin{table}[H]
+\centering
+\caption{Configuraciones del modelo \texttt{transformer}}
+\label{tab:transformer_configs}
+\begin{tabular}{lccc}
+\toprule
+Tamaño & Capas & $d_{\text{modelo}}$ & Cabezas \\
+\midrule
+150M & 12 & 768 & 12 \\
+350M & 24 & 1024 & 16 \\
+750M & 24 & 1536 & 24 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{MatMul-Free plano (línea base recurrente)}
+
+Implementación basada en el trabajo de Zhu et al. (2024), que utiliza el bloque recurrente HGRN (Hierarchically Gated Recurrent Network) y capas lineales con pesos ternarios (BitLinear). Al igual que el modelo híbrido, opera a nivel de bytes. Su arquitectura es plana (sin jerarquía) y sirve como referencia para medir la contribución del \textit{dynamic chunking}. Las dimensiones se escalan para igualar el número de parámetros no relacionados con embeddings en cada categoría.
+
+\subsubsection{Modelo híbrido propuesto (HNetBit)}
+
+La arquitectura principal combina:
+\begin{itemize}
+\item \textbf{Pesos ternarios}: todas las proyecciones lineales (excepto la tabla de embeddings y la proyección residual) utilizan cuantización ternaria $\{-1,0,+1\}$ mediante el estimador de paso directo (STE). La función de cuantización es
+\[
+\operatorname{weight\_quant}(w)=\frac{\operatorname{round}\bigl(w\cdot\alpha\bigr)}{\alpha},\quad \alpha=\frac{1}{\operatorname{mean}(|w|)},
+\]
+con valores redondeados a $\{-1,0,+1\}$.
+\item \textbf{Recurrencia HGRN}: sustituye a la atención en todos los bloques, con complejidad $O(L)$ en entrenamiento y estado $O(1)$ en inferencia. La actualización del estado oculto es $h_t = f_t \odot h_{t-1} + i_t$, donde $f_t = \sigma(\operatorname{BitLinear}_f(x_t))$ e $i_t = \operatorname{SwiGLU}(\operatorname{BitLinear}_i(x_t), 1-f_t)$.
+\item \textbf{Chunking dinámico multi-etapa}: la secuencia se comprime recursivamente mediante un módulo de enrutamiento que aprende límites basados en la similitud coseno entre representaciones consecutivas. Cada etapa consta de un codificador, un módulo de enrutamiento, una red interna (que puede ser otra etapa) y un decodificador con reconstrucción suave mediante media móvil exponencial.
+\end{itemize}
+
+La Tabla~\ref{tab:hnetbit_configs} resume las configuraciones para los tres tamaños evaluados.
+
+\begin{table}[H]
+\centering
+\caption{Configuraciones del modelo \texttt{hybrid}}
+\label{tab:hnetbit_configs}
+\begin{tabular}{lcccc}
+\toprule
+Tamaño & $d_{\text{modelo}}$ & Bloques (pre$|$inner$|$post) & Etapas & Parámetros \\
+\midrule
+150M & $[576,768]$ & $[4,10,4]$ & 1 & 138M \\
+350M & $[640,896,1152]$ & $[4,12,4]\times2$ & 2 & 419M \\
+750M & $[896,1152,1536]$ & $[6,16,6]\times2$ & 2 & 1026M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Adicionalmente, se evalúa una variante denominada \texttt{hybrid\_attn} que, en la etapa más interna, reemplaza la mitad de los bloques HGRN por bloques de atención con ventana deslizante (tamaño 64 y RoPE) siguiendo el patrón \texttt{"xaxa"} (HGRN, atención, HGRN, atención). Esta variante permite estudiar el efecto de reintroducir atención en el nivel más profundo de la jerarquía.
+
+\subsection{Metodología de entrenamiento}
+
+Todos los modelos se entrenan con el mismo presupuesto de 25 000 millones de bytes de texto. Para igualar el consumo de datos entre tokenizadores, se define el número de pasos como:
+\[
+\text{steps} = \frac{\text{total\_bytes}}{\text{effective\_batch\_size} \times \text{bytes\_por\_muestra}},
+\]
+donde \textit{bytes\_por\_muestra} es 4096 para los modelos byte-level y $1280\times 4.5\approx 5760$ para el transformer. El tamaño efectivo de lote es 32 en todos los casos (4 en cada GPU con 8 acumulaciones de gradiente).
+
+Los hiperparámetros comunes se detallan en la Tabla~\ref{tab:common_hyperparams}.
+
+\begin{table}[H]
+\centering
+\caption{Hiperparámetros de entrenamiento comunes}
+\label{tab:common_hyperparams}
+\begin{tabular}{ll}
+\toprule
+Parámetro & Valor \\
+\midrule
+Optimizador & AdamW ($\beta_1=0.9$, $\beta_2=0.95$, $\epsilon=1\times10^{-8}$) \\
+Decaimiento de peso & 0.01 (sin decaimiento en sesgos, normas, embeddings) \\
+Norma de gradiente máxima & 1.0 \\
+Precisión mixta & bf16 \\
+Horizonte de aprendizaje & WSD: 1\,\% warmup, 79\,\% estable, 20\,\% decaimiento coseno \\
+Semilla & 42 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Las tasas de aprendizaje se seleccionan empíricamente siguiendo la literatura de modelos ternarios:
+\begin{itemize}
+\item \texttt{transformer}: $3\times10^{-4}$.
+\item \texttt{matmulfree} y \texttt{hybrid}: $4\times10^{-3}$ (150M), $2.5\times10^{-3}$ (350M), $1.5\times10^{-3}$ (750M).
+\end{itemize}
+
+El entrenamiento se ejecuta en una GPU NVIDIA A100 de 80 GB. Se utiliza checkpointing de gradientes para el transformer y \texttt{matmulfree}, pero no para \texttt{hybrid} debido a que su paso forward no está instrumentado para ello. Esto implica que los modelos híbridos consumen más memoria de entrenamiento (aproximadamente 15.5 GB para la versión de 150M) en comparación con el transformer (6-8 GB para el mismo tamaño).
+
+\subsection{Métricas de evaluación}
+
+\subsubsection{Calidad: Bits por byte (BPB)}
+
+Para permitir la comparación entre arquitecturas con diferentes vocabularios, se utiliza la métrica \textit{bits per byte} (BPB). A partir de la pérdida de entropía cruzada media $\mathcal{L}$ (en nats):
+\begin{itemize}
+\item Para modelos byte-level: $\text{BPB} = \frac{\mathcal{L}}{\ln 2}$.
+\item Para el transformer: $\text{BPB} = \frac{\mathcal{L}}{a \cdot \ln 2}$, donde $a$ es el número medio de bytes por token en el conjunto de validación (aproximadamente 4.5).
+\end{itemize}
+Un BPB más bajo indica mejor capacidad predictiva. La evaluación se realiza cada 1000 pasos sobre 50 lotes de validación ($\sim$0.8 MB), y la medición final utiliza 200 lotes ($\sim$3.3 MB).
+
+\subsubsection{Eficiencia: Tamaño en despliegue}
+
+Para los modelos ternarios, se exporta una versión compacta (\texttt{model\_deploy.pt}) donde los pesos ternarios se empaquetan a 2 bits por parámetro (usando codificación de tres estados). Esto proporciona una compresión de aproximadamente $7-8\times$ frente a FP16. El tamaño en disco y los bits por parámetro se reportan para cada modelo.
+
+\subsubsection{Eficiencia: Rendimiento de inferencia}
+
+Mediante el script \texttt{profile\_inference.py} se miden dos aspectos:
+\begin{itemize}
+\item \textbf{Latencia de prefil} (\textit{time-to-first-token}): tiempo de una pasada forward para longitudes de contexto 512, 1024, 2048 y 4096 bytes. Se realizan 3 ejecuciones de calentamiento y 5 temporizadas, utilizando eventos CUDA.
+\item \textbf{Rendimiento de decodificación} (\textit{tokens por segundo}): generación autorregresiva de 256 tokens a partir de un prompt de 256 bytes, para tamaños de lote 1, 4 y 8. Se mide la memoria máxima asignada con \texttt{torch.cuda.max\_memory\_allocated()}.
+\end{itemize}
+Todas las mediciones se realizan en modo \texttt{torch.no\_grad()} para evitar la retención de buffers del grafo de autograd.
