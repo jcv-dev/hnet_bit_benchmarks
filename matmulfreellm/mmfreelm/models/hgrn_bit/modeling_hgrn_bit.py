@@ -214,7 +214,7 @@ class HGRNBitModel(HGRNBitPreTrainedModel):
         hidden_states = inputs_embeds
 
         if use_cache:
-            if past_key_values is None:
+            if past_key_values is None or (isinstance(past_key_values, RecurrentCache) and len(past_key_values.states) == 0):
                 past_key_values = [layer.attn.init_state(batch_size) for layer in self.layers]
             if not isinstance(past_key_values, RecurrentCache):
                 past_key_values = RecurrentCache.from_legacy_cache(past_key_values)
