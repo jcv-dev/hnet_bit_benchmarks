@@ -109,6 +109,12 @@ class RecurrentCache(Cache):
 
         cache = cls(seen_tokens)
         if past_key_values is not None:
-            for layer_idx in range(len(past_key_values)):
-                cache.update(past_key_values[layer_idx], layer_idx)
+            if isinstance(past_key_values, Cache) and not isinstance(past_key_values, RecurrentCache):
+                for layer_idx in range(len(past_key_values)):
+                    layer = past_key_values.layers[layer_idx]
+                    if layer.is_initialized and layer.keys is not None:
+                        cache.update(layer.keys, layer_idx)
+            else:
+                for layer_idx in range(len(past_key_values)):
+                    cache.update(past_key_values[layer_idx], layer_idx)
         return cache

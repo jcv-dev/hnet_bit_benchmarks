@@ -332,8 +332,9 @@ class HGRNBitForCausalLM(HGRNBitPreTrainedModel):
         # only last token for `inputs_ids` if the `past_key_values` is passed along.
         if past_key_values is not None:
             if not isinstance(past_key_values, RecurrentCache):
-                past_key_values = RecurrentCache.from_legacy_cache(past_key_values, input_ids.shape[1] - 1)
-            input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
+                past_key_values = RecurrentCache.from_legacy_cache(past_key_values)
+            if len(past_key_values.states) > 0:
+                input_ids, attention_mask = input_ids[:, -1:], attention_mask[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {'inputs_embeds': inputs_embeds}
