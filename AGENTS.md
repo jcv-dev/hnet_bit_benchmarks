@@ -80,14 +80,16 @@ python profile_inference.py --export runs/spanish/hybrid_150M/model_deploy.pt   
 ## Architecture details
 
 | Size | transformer params | matmulfree params | hybrid params | hybrid_attn params |
-|---|---|---|---|---|
+|---|---|---|---|---|---|
 | 150M | 190M (113M non-emb) | 114M | 138M | ~126M |
 | 350M | 505M (403M non-emb) | 309M | 419M | ~407M |
 | 750M | 1060M (906M non-emb) | 794M | 1026M | ~1010M |
 
+Note: hybrid 150M is a 1-stage hierarchy (2 groups); 350M/750M use the 2-stage hierarchy (3 groups) per the H-Net paper. 750M tier was dropped from the run order.
+
 Non-embedding params exclude lookup tables (embedding + LM head). Transformer has ~77-154M embedding overhead from 50K BPE vocab. Byte-level models use 256 vocab. Report both in thesis.
 
-**Important context window asymmetry**: The transformer sees ~5,760 bytes of context (1,280 BPE tokens × ~4.5 bytes/token) while byte-level models see 4,096 bytes. The `bytes_per_step` formula equalizes the text budget, but the per-sample context window differs — giving the transformer a potential advantage on long-range dependencies. Document this in the thesis.
+**Important context window asymmetry**: The transformer sees ~4,043 bytes of context (1,280 BPE tokens × ~3.16 bytes/token) while byte-level models see 4,096 bytes. The `bytes_per_step` formula equalizes the text budget, but the per-sample context window differs — giving the transformer a potential advantage on long-range dependencies. Document this in the thesis.
 
 ## Framework quirks
 
@@ -106,7 +108,7 @@ Non-embedding params exclude lookup tables (embedding + LM head). Transformer ha
 All models consume the same 25B bytes of underlying Spanish text. The `bytes_per_step` formula equalizes the budget across tokenization schemes:
 
 - Byte-level (matmulfree, hybrid, hybrid_attn): `effective_batch × byte_seq_length` = 32 × 4,096 = 131,072 bytes/step
-- BPE (transformer): `effective_batch × token_seq_length × avg_bytes_per_token` = 32 × 1,280 × ~4.5 = 184,320 bytes/step
+- BPE (transformer): `effective_batch × token_seq_length × avg_bytes_per_token` = 32 × 1,280 × ~3.16 = 129,464 bytes/step
 
 Total steps differ, but total bytes are identical.
 
@@ -203,11 +205,10 @@ Intermediate step checkpoints are automatically deleted at end — only final, b
 
 Results CSVs are at `runs/spanish/results_<model>_<size>.csv` (parent directory, not inside per-run subdirectory).
 
-## Run order (10 runs)
+## Run order (7 runs)
 
 By size tier, sequentially (one at a time to avoid GPU contention):
-1. 150M: hybrid, transformer, matmulfree, hybrid_attn
-2. 350M: hybrid, transformer, matmulfree
-3. 750M: hybrid, transformer, matmulfree
+1. 150M: hybrid, transformer, matmulfree, hybrid_attn  (done)
+2. 350M: hybrid, transformer, matmulfree               (2-stage hybrid)
 
 Use `tmux new -s name -d 'cmd'` to keep runs alive after SSH disconnect. Use `python generate_results.py --output results_tier.csv` after each tier.

@@ -101,7 +101,7 @@ for MODEL in "${MODELS[@]}"; do
         --max_steps 15 \
         --batch_size 2 \
         --grad_accum 1 \
-        --total_tokens 100000 \
+        --total_bytes 100000 \
         --output_dir "$SMOKE_DIR" \
         --cache_dir "$DATA_DIR" \
         --lr 1e-3 \

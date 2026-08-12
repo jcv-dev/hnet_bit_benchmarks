@@ -239,24 +239,28 @@ This writes `results_150M.csv` with only the 150M rows. It is read-only on the p
 
 ### Tier 2: 350M (3 runs: hybrid, transformer, matmulfree)
 
-No hybrid_attn at 350M (the attention ablation is only run at 150M). Estimated time: ~300-400 hours (sequential).
+No hybrid_attn at 350M (the attention ablation is only run at 150M). The hybrid uses the 2-stage hierarchy (3 groups) — the first 2-stage run in this repo. Estimated time (single A100-80GB): hybrid ~100-125 h, transformer ~140-160 h, matmulfree ~300-340 h (~23-26 days sequential).
+
+Before launching, run the testing script (validates the 2-stage topology on CPU + 20-step GPU probe in a scratch dir):
 
 ```bash
-tmux new -s hybrid_350M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 350M'
-tmux new -s transformer_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 350M'
-tmux new -s matmulfree_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 350M'
+bash scripts/probe_350m.sh
+```
+
+Data is built once (see the dataset section above); all runs use `--skip_data_build`. Launch exactly like the 150M tier:
+
+```bash
+tmux new -s hybrid_350M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 350M --skip_data_build'
+tmux new -s transformer_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 350M --skip_data_build'
+tmux new -s matmulfree_350M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 350M --skip_data_build'
 
 # After all complete:
 python generate_results.py --runs_dir ./runs/spanish --output results_350M.csv
 ```
 
-### Tier 3: 750M (3 runs: hybrid, transformer, matmulfree)
+### Tier 3: 750M
 
-```bash
-tmux new -s hybrid_750M      -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model hybrid      --size 750M'
-tmux new -s transformer_750M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model transformer  --size 750M'
-tmux new -s matmulfree_750M  -d 'cd ~/tesis && source /venv/main/bin/activate && python train_spanish.py --model matmulfree   --size 750M'
-```
+Dropped from the run order (not trained).
 
 ### Final aggregate
 

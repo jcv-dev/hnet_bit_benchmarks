@@ -114,6 +114,7 @@ class SpanishTrainer:
         self.bytes_seen = 0
         self.best_val_bpb = float("inf")
         self.training_start_time = None
+        self._training_time_accumulated = 0.0
 
         # Parameter count
         self.param_count = sum(p.numel() for p in self.model.parameters())
@@ -336,7 +337,7 @@ class SpanishTrainer:
         self._evaluate_and_log()
 
         # Training time & hardware stats
-        training_elapsed = time.time() - self.training_start_time
+        training_elapsed = self._training_time_accumulated + (time.time() - self.training_start_time)
         peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 ** 2) if torch.cuda.is_available() else 0.0
         peak_reserved_mb = torch.cuda.max_memory_reserved() / (1024 ** 2) if torch.cuda.is_available() else 0.0
         disk_size_mb = sum(p.numel() for p in self.model.parameters()) * 2 / (1024 ** 2)  # bf16
@@ -418,6 +419,7 @@ class SpanishTrainer:
             "milestones_passed": sorted(self._passed_milestones),
             "config": {k: v for k, v in self.config.__dict__.items()
                        if not k.startswith("_") and not callable(v)},
+            "training_time_accumulated": self._training_time_accumulated,
         }
         torch.save(state, path)
         print(f"  Saved checkpoint: {path}")
@@ -432,6 +434,7 @@ class SpanishTrainer:
         self.global_step = ckpt["global_step"]
         self.bytes_seen = ckpt["bytes_seen"]
         self.best_val_bpb = ckpt.get("best_val_bpb", float("inf"))
+        self._training_time_accumulated = ckpt.get("training_time_accumulated", 0.0)
         if "milestones_passed" in ckpt:
             self._passed_milestones = set(ckpt["milestones_passed"])
         else:
