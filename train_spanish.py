@@ -67,6 +67,33 @@ def _cast_num(value: str) -> int | float | str:
     return value
 
 
+def prune_step_checkpoints(output_dir, keep: int = 2) -> None:
+    """
+    Delete all but the newest *keep* ``checkpoint_step_*.pt`` files.
+
+    Step checkpoints (every 5k steps) are only needed for resume, so keeping
+    the latest few caps transient disk usage: ~170 GB peak (38 files) drops
+    to ~2 files per run. ``checkpoint_best/final/milestone_*`` are never
+    touched. Pure filesystem operation, safe to call after every step save.
+    """
+    from pathlib import Path
+
+    keep = max(keep, 1)
+    step_files = [
+        p for p in Path(output_dir).glob("checkpoint_step_*.pt")
+        if p.stem[len("checkpoint_step_"):].isdigit()
+    ]
+    if len(step_files) <= keep:
+        return
+    step_files.sort(key=lambda p: int(p.stem[len("checkpoint_step_"):]))
+    for stale in step_files[:-keep]:
+        try:
+            stale.unlink()
+            print(f"  Pruned old step checkpoint: {stale.name}")
+        except OSError as e:
+            print(f"  WARNING: could not prune {stale.name}: {e}")
+
+
 class SpanishTrainer:
     """
     Training loop for the Spanish Billion Words benchmark.
@@ -423,6 +450,11 @@ class SpanishTrainer:
         }
         torch.save(state, path)
         print(f"  Saved checkpoint: {path}")
+        if name.startswith("step_"):
+            prune_step_checkpoints(
+                self.output_dir,
+                keep=getattr(self.config, "keep_step_checkpoints", 2),
+            )
 
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)

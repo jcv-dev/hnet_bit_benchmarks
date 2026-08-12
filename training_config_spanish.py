@@ -116,6 +116,7 @@ class SpanishTrainingConfig:
     eval_interval_steps: int = 1000     # BPB every 1k steps
     save_interval_steps: int = 5000
     log_interval_steps: int = 10
+    keep_step_checkpoints: int = 2     # latest step checkpoints kept for resume
 
     # Checkpointing milestones (in bytes of training text) for final metrics
     checkpoint_milestones: List[int] = field(

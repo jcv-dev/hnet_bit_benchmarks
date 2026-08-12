@@ -21,7 +21,7 @@ The models use Triton kernels for fast training. Triton's JIT compiler requires 
 
 **Requirements:**
 - NVIDIA A100 80GB (or H100, A6000)
-- At least 100 GB disk (200 GB recommended for datasets + checkpoints)
+- At least 100 GB disk (step checkpoints are pruned to the latest 2 during training; peak is ~45 GB for the 350M tier + ~21 GB corpus)
 - CUDA 12.4+ pre-installed
 
 ## 2. Get the code onto the machine
