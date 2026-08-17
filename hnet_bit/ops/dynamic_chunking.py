@@ -258,7 +258,8 @@ class RoutingModuleBit(nn.Module):
         return RoutingModuleOutput(
             boundary_prob=boundary_prob,
             boundary_mask=boundary_prob[..., 1] > 0.5,
-            selected_probs=boundary_prob.max(dim=-1).values.unsqueeze(-1),
+            # (B, 1, 1) so out (B, 1, D) * p broadcasts on the feature dim only
+            selected_probs=boundary_prob.max(dim=-1).values.unsqueeze(-1).unsqueeze(-1),
         )
 
 
