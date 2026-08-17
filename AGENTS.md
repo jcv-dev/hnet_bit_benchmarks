@@ -170,7 +170,7 @@ The CSV has two compression-related columns that are often confused:
 
 | Column | What it measures | Hybrid 150M value |
 |---|---|---|
-| `Overall_Compression_Ratio` | **Training sparsity** — fraction of ternary weights that are non-zero during training (stored in `training_stats.json`). This is NOT the compression you get on disk. A value of ~0.31 means ~31% of ternary weights are non-zero on average. | ~0.31 |
+| `Overall_Compression_Ratio` | **Hierarchical token routing** — product of per-stage `boundary_mask` means (train_spanish.py:272,328), i.e. the average fraction of input tokens forwarded to the innermost stage by the dynamic chunking router. ~0.31 (1-level) means ~31% of tokens reach the innermost stage; the 350M's ~0.066 is 0.30 × 0.24 from its 2-level hierarchy (~7% of tokens go innermost). This is *not* weight sparsity and *not* the on-disk compression. | ~0.31 |
 | `Deploy_Size_MB` / `Bits_Per_Param` | **Actual deployment compression** — the size of `model_deploy.pt` on disk after 2-bit packing. The real compression ratio is `FP16_equivalent / Deploy_Size_MB` (e.g. 263.9 MB / 37.9 MB = 7.0×). | 37.9 MB / 2.29 bits/param |
 
 The deployment compression ratio is shown in the export CLI output as `Compression ratio : 7.0x vs fp16` but is not stored in a dedicated CSV column. Compute it by dividing `Disk_Size_MB` (FP16 equivalent) by `Deploy_Size_MB`.
