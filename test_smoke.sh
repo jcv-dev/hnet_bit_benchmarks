@@ -130,6 +130,51 @@ for MODEL in "${MODELS[@]}"; do
 done
 
 # ------------------------------------------------------------------
+# 2.5. Two-stage hierarchy decode test (catches cache-slice regressions)
+# ------------------------------------------------------------------
+echo ""
+echo "--- Two-stage hierarchy decode test (350M-shaped, tiny) ---"
+if python3 -c "
+import sys
+sys.path.insert(0, '$ROOT')
+import torch
+from hnet_bit.models.hnet_bit import HNetBitConfig, HNetBitForCausalLM
+
+# Same hierarchy shape as hybrid_350M (2 non-innermost stages + innermost)
+cfg = HNetBitConfig(
+    vocab_size=256,
+    d_model=[48, 64, 80],
+    num_blocks=[[1, 0, 1], [1, 0, 1], [2]],
+    num_heads=2, expand_ratio=2, hidden_ratio=4,
+    attn_mode='fused_recurrent',
+    use_short_conv=True, conv_size=4, share_conv_kernel=True,
+    use_lower_bound=False,
+    max_position_embeddings=256,
+    rms_norm_eps=1e-6,
+)
+model = HNetBitForCausalLM(cfg)
+model.eval()
+
+B, L = 2, 32
+ids = torch.randint(0, 256, (B, L))
+amask = torch.ones(B, L, dtype=torch.bool)
+with torch.no_grad():
+    out = model.generate(
+        ids, attention_mask=amask,
+        max_new_tokens=16, do_sample=False, pad_token_id=0,
+        eos_token_id=None, use_cache=True,
+    )
+expected = L + 16
+assert out.shape[1] == expected, f'expected {expected} tokens, got {out.shape[1]}'
+print(f'  OK: 2-stage generate() produced {out.shape[1]} tokens (batch {B})')
+" 2>&1 | tail -3; then
+    echo "  PASS: two-stage decode"
+else
+    echo "  FAIL: two-stage decode"
+    FAIL=1
+fi
+
+# ------------------------------------------------------------------
 # 3. Generate aggregated results
 # ------------------------------------------------------------------
 echo ""

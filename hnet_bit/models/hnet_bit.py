@@ -333,7 +333,12 @@ class HGRNBitStack(nn.Module):
         cache = HGRNBlockCache()
         for layer in self.layers:
             state = layer.attn.init_state(batch_size)
-            cache.states.append(state)
+            # Blocks index the cache by global layer_idx (encoder: 0..n-1,
+            # decoder: offset..offset+n-1), so place states at that position.
+            idx = layer.attn.layer_idx
+            while len(cache.states) <= idx:
+                cache.states.append(None)
+            cache.states[idx] = state
         return cache
 
     def forward(
@@ -744,7 +749,7 @@ class HNetBit(nn.Module):
             if state is None:
                 sub.states.append(None)
             else:
-                sub.states.append(tuple(s[mask] for s in state))
+                sub.states.append(tuple(s[mask] if s is not None else None for s in state))
         sub.seen_tokens = cache.seen_tokens
         return sub
 
@@ -756,6 +761,9 @@ class HNetBit(nn.Module):
                 continue
             merged = []
             for full_s, sub_s in zip(full_state, sub_state):
+                if full_s is None or sub_s is None:
+                    merged.append(sub_s)
+                    continue
                 full_s[mask] = sub_s
                 merged.append(full_s)
             full.states[i] = tuple(merged)

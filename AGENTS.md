@@ -148,7 +148,7 @@ The LR difference follows the original MatMul-free and H-Net papers — ternary 
 
 Lower is better. Validation BPB is computed every 1,000 steps over 50 batches (~0.8 MB of text). Final evaluation uses 200 batches (~3.3 MB of text). BPB is preferred over perplexity because it is vocabulary-independent.
 
-**Deployment size** — primary efficiency metric. The compact export (`model_deploy.pt`) stores frozen ternary weights at ~2.1 bits/parameter. Compared to FP16 (16 bits/param), this achieves 7-8× compression for ternary models. The transformer's export stores FP16 weights (no compression).
+**Deployment size** — primary efficiency metric. The compact export (`model_deploy.pt`) stores frozen ternary weights at ~2.1 bits/parameter. Compared to FP16 (16 bits/param), this achieves 7-8× compression for ternary models. The transformer's export stores uncompressed FP32 weights (4 bytes/param — 2× the FP16 size; it's a plain dump, not a deployment artifact).
 
 **Inference throughput** — secondary metric. Measured via `profile_inference.py`:
 - Prefill (Time-To-First-Token): single forward pass at seq lengths 512/1024/2048/4096, 3 warmup + 5 timed runs, CUDA event timing
