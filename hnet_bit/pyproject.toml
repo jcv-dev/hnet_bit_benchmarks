@@ -42,7 +42,7 @@ dev = [
 ]
 
 [project.scripts]
-hnet-bit-generate = "generate:main"
+hnet-bit-generate = "hnet_bit.generate:main"
 
 [tool.setuptools]
 packages = [
