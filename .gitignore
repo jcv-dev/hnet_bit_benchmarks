@@ -5,6 +5,7 @@
 # Data and outputs
 /data/
 /runs/
+/runs (1)/
 /test_checkpoints/
 
 # Build artifacts

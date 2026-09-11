@@ -4,7 +4,7 @@
 
 Thesis benchmark comparing three language model architectures on Spanish Billion Words (25B-byte training budget):
 
-- `transformer` — Llama-style, BPE tokenizer (gpt2), FP16 weights, HuggingFace
+- `transformer` — Llama-style, BPE tokenizer (gpt2), FP32 weights, HuggingFace
 - `matmulfree` — flat HGRN recurrent LM, byte-level, ternary {-1,0,+1} weights (from `matmulfreellm/`)
 - `hybrid` / `hybrid_attn` — hierarchical HNetBit with dynamic chunking + ternary weights (from `hnet_bit/`)
 - `hybrid_attn` — same as hybrid, but innermost layer alternates HGRN with sliding-window attention
@@ -89,7 +89,7 @@ Note: hybrid 150M is a 1-stage hierarchy (2 groups); 350M/750M use the 2-stage h
 
 Non-embedding params exclude lookup tables (embedding + LM head). Transformer has ~77-154M embedding overhead from 50K BPE vocab. Byte-level models use 256 vocab. Report both in thesis.
 
-**Important context window asymmetry**: The transformer sees ~4,043 bytes of context (1,280 BPE tokens × ~3.16 bytes/token) while byte-level models see 4,096 bytes. The `bytes_per_step` formula equalizes the text budget, but the per-sample context window differs — giving the transformer a potential advantage on long-range dependencies. Document this in the thesis.
+**Important context window note (corrected)**: The measured corpus average is **3.16 bytes/BPE-token** (not 4.5 as originally estimated). Therefore the transformer sees 1,280 × 3.16 ≈ **4,043 bytes** of context per sample vs **4,096 bytes** for byte-level models — the contexts are nearly symmetric. The 4.5 figure was an initial estimate; the pipeline measures the real average and stores it in `corpus_meta.npz`. This also means the transformer's `bytes_per_step` is 32 × 1,280 × 3.16 ≈ 129,400 (not 184,320).
 
 ## Framework quirks
 
@@ -108,7 +108,7 @@ Non-embedding params exclude lookup tables (embedding + LM head). Transformer ha
 All models consume the same 25B bytes of underlying Spanish text. The `bytes_per_step` formula equalizes the budget across tokenization schemes:
 
 - Byte-level (matmulfree, hybrid, hybrid_attn): `effective_batch × byte_seq_length` = 32 × 4,096 = 131,072 bytes/step
-- BPE (transformer): `effective_batch × token_seq_length × avg_bytes_per_token` = 32 × 1,280 × ~3.16 = 129,464 bytes/step
+- BPE (transformer): `effective_batch × token_seq_length × avg_bytes_per_token` = 32 × 1,280 × ~3.16 ≈ 129,400 bytes/step
 
 Total steps differ, but total bytes are identical.
 
@@ -132,12 +132,12 @@ Total steps differ, but total bytes are identical.
 | Axis | Transformer | Matmulfree / Hybrid |
 |---|---|---|
 | Learning rate | 3e-4 | 4e-3 (150M), 2.5e-3 (350M), 1.5e-3 (750M) |
-| Per-sample context | ~5,760 bytes (1,280 BPE tokens) | 4,096 bytes |
+| Per-sample context | ~4,043 bytes (1,280 BPE tokens × 3.16) | 4,096 bytes |
 | Gradient checkpointing | ✓ functional | ✓ matmulfree, ✗ hybrid (not implemented in forward) |
 | Tokenization | BPE (gpt2, 50K vocab) | Byte-level (256 vocab) |
-| Weight representation | FP16 | Ternary {-1,0,+1} (BitLinear STE) |
+| Weight representation | FP32 | Ternary {-1,0,+1} (BitLinear STE) |
 
-The LR difference follows the original MatMul-free and H-Net papers — ternary models require higher learning rates to converge. The context window asymmetry is inherent to byte-level tokenization (byte models get more tokens per sample for the same byte budget) and is conservative — the transformer has a potential advantage on long-range dependencies.
+The LR difference follows the original MatMul-free and H-Net papers — ternary models require higher learning rates to converge. Context windows are nearly symmetric (~4,043 vs 4,096 bytes), so neither side has a long-range-dependency advantage.
 
 ### Metrics
 
@@ -170,10 +170,14 @@ The CSV has two compression-related columns that are often confused:
 
 | Column | What it measures | Hybrid 150M value |
 |---|---|---|
-| `Overall_Compression_Ratio` | **Hierarchical token routing** — product of per-stage `boundary_mask` means (train_spanish.py:272,328), i.e. the average fraction of input tokens forwarded to the innermost stage by the dynamic chunking router. ~0.31 (1-level) means ~31% of tokens reach the innermost stage; the 350M's ~0.066 is 0.30 × 0.24 from its 2-level hierarchy (~7% of tokens go innermost). This is *not* weight sparsity and *not* the on-disk compression. | ~0.31 |
+| `Overall_Compression_Ratio` | **Chunking compression** — average product of the boundary fractions (`boundary_mask.mean()`) of the routing stages during training (stored in `training_stats.json`, computed in `train_spanish.py:244,297-300`). NOT related to ternary weight sparsity and NOT the compression on disk. A value of ~0.31 means ~31% of positions are boundaries at the single 150M stage (avg chunk ≈ 3.2 bytes); 0.066 at 350M = two stages (0.30 × 0.22, ~15× sequence compression; the product drifts 0.064 → 0.072 across training). | ~0.31 |
 | `Deploy_Size_MB` / `Bits_Per_Param` | **Actual deployment compression** — the size of `model_deploy.pt` on disk after 2-bit packing. The real compression ratio is `FP16_equivalent / Deploy_Size_MB` (e.g. 263.9 MB / 37.9 MB = 7.0×). | 37.9 MB / 2.29 bits/param |
 
 The deployment compression ratio is shown in the export CLI output as `Compression ratio : 7.0x vs fp16` but is not stored in a dedicated CSV column. Compute it by dividing `Disk_Size_MB` (FP16 equivalent) by `Deploy_Size_MB`.
+
+### HNetBit training-time scaling (verified FLOPs model)
+
+Per HGRN block per token: `8d² + 6d·I` FLOPs (4 projections d×d + MLP gate/down, I = 256·⌈(2/3·d·4)/256⌉). Stage s processes Πm_i·L tokens (m_i = measured boundary fractions, L=4096). Result: 150M = 443.3 GFLOPs/sample, 350M = 634.0 G → ratio 1.430 vs measured time ratio 115.58/80.57 = 1.4345. Dense equivalents 840.7/2559.8 G (×3.05 ≈ params ×3.03); chunking removes 47.3% (150M) and 75.2% (350M) of block FLOPs. This is the mathematical explanation of the ×1.43 training-time scaling (Ch 7, Table `tab:flops`).
 
 ### Known limitations
 
@@ -182,7 +186,7 @@ The deployment compression ratio is shown in the export CLI output as `Compressi
 - **Spanish only**: Results may not generalize to other languages, scripts, or domains.
 - **Contiguous val split**: The last 5% of the corpus is used for validation without shuffling. If the corpus has topical or chronological drift, validation metrics may not represent the full training distribution.
 - **Not FLOPs-matched**: Unlike the original H-Net paper, models are compared at equal training bytes, not equal compute FLOPs. Parameter counts differ across architectures.
-- **Context window asymmetry**: The transformer sees ~5,760 equivalent bytes of context vs 4,096 for byte-level models — a potential advantage on long-range dependencies.
+- **Context window**: Nearly symmetric — transformer sees 1,280 tokens × 3.16 bytes/token ≈ 4,043 bytes vs 4,096 for byte-level models (see corrected note above). No advantage for either side.
 - **Gradient checkpointing gap**: Transformer and matmulfree use activation recomputation; hybrid models do not. This affects training memory consumption but not final model quality.
 
 ## Output files per run
@@ -205,10 +209,14 @@ Intermediate step checkpoints are automatically deleted at end — only final, b
 
 Results CSVs are at `runs/spanish/results_<model>_<size>.csv` (parent directory, not inside per-run subdirectory).
 
-## Run order (7 runs)
+## Run order (6 completed runs)
 
-By size tier, sequentially (one at a time to avoid GPU contention):
-1. 150M: hybrid, transformer, matmulfree, hybrid_attn  (done)
-2. 350M: hybrid, transformer, matmulfree               (2-stage hybrid)
+Decision made 2026-08: 750M and hybrid_attn 150M were **dropped** — the thesis evaluates only 150M and 350M.
+
+Completed (all 6):
+1. 150M: hybrid, transformer, matmulfree
+2. 350M: hybrid, transformer, matmulfree
+
+Full run logs live in `runs (1)/runs/spanish/` (checkpoints may still be on the cloud instance). The `runs/spanish/` copy currently holds only `config.json` files plus a leftover misconfigured `matmulfree_750M` config (100B budget, lr=0 — ignore it).
 
 Use `tmux new -s name -d 'cmd'` to keep runs alive after SSH disconnect. Use `python generate_results.py --output results_tier.csv` after each tier.

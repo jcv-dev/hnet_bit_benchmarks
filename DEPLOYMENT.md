@@ -130,7 +130,7 @@ python train_spanish.py --model hybrid --size 150M --max_steps 1 --batch_size 1
 python train_spanish.py --model transformer --size 150M --max_steps 1 --batch_size 1
 ```
 
-This downloads ~1.5 GB of compressed text from HuggingFace, which expands to ~8.7 GB of raw text. The data caches to `./data/spanish/` and subsequent runs use the cache automatically with `--skip_data_build`.
+This downloads ~4.7 GB of compressed text (parquet, 46.9M documents) from HuggingFace, which expands to ~8.7 GB of raw UTF-8 text. The data caches to `./data/spanish/` and subsequent runs use the cache automatically with `--skip_data_build`.
 
 ## 7. Run the benchmark
 
