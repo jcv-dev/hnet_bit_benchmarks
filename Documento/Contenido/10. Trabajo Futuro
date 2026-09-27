@@ -1,0 +1,60 @@
+\chapter{Trabajo Futuro}
+
+Los resultados y las limitaciones identificadas en la Discusión abren las siguientes líneas de trabajo:
+
+\section{Evaluación empírica más amplia}
+
+\begin{itemize}
+    \item \textbf{Múltiples semillas y estimación de varianza.} Repetir cada configuración con varias semillas permitiría calcular intervalos de confianza sobre el BPB y determinar si las diferencias de 0.6\,\% observadas a 150M son significativas. Es el primer paso para consolidar las afirmaciones de superioridad del MatMul-Free.
+    \item \textbf{Escalas mayores.} La hipótesis central pendiente es que la brecha del híbrido continúa cerrándose con la escala. Entrenar HNetBit y las líneas base a 750M y, si los recursos lo permiten, con presupuestos de datos mayores (50B--100B bytes), permitiría verificar o descartar la tendencia decreciente observada (9.3\,\% $\rightarrow$ 3.7\,\%). Un análisis preliminar de escalado del costo de entrenamiento sitúa el cruce de costos en torno a los $\sim$770M de parámetros.
+    \item \textbf{Presupuesto de datos.} El log de validación del híbrido de 150M muestra que el $\sim$11\,\% del tiempo total de entrenamiento captura $\sim$96\,\% de la calidad final (1/BPB), una propiedad del protocolo de bytes iguales (todos los modelos se sobre-entrenan de 4 a 9 veces sobre Chinchilla), no de la arquitectura. Fijar puntos de parada óptimos por arquitectura reduciría el costo sin pérdida apreciable de calidad.
+    \item \textbf{Enmarcado de las comparaciones futuras.} Las extensiones deben preservar el enmarcado del benchmark —comportamiento restringido por el protocolo (bytes, optimizador, WSD, semilla, lote, tasas por defecto, sin barridos), no óptimo por arquitectura (Capítulos~\ref{cap:metodo} y~\ref{cap:discusion})— o declarar explícitamente en qué eje se desvía.
+    \item \textbf{Otros idiomas y dominios.} Evaluar el comportamiento en dominios no lingüísticos (código fuente, secuencias biológicas, notación matemática) donde la motivación del trabajo predice la mayor ventaja de los modelos byte-level; y en idiomas con morfología distinta al español, donde el sesgo del BPE se manifiesta de otra forma.
+    \item \textbf{Tareas posteriores.} El BPB mide la calidad del modelado de lenguaje, no su utilidad. Evaluar los modelos en tareas de clasificación, generación o comprensión sobre benchmarks en español complementaría la imagen con métricas orientadas a aplicación.
+\end{itemize}
+
+\section{Mejoras arquitectónicas}
+
+\begin{itemize}
+    \item \textbf{Evaluar la variante \texttt{hybrid\_attn}.} La variante con atención deslizante en la etapa más interna quedó implementada pero sin evaluar. Su ejecución de 150M es la forma más barata de medir el beneficio de reintroducir atención local en la jerarquía, dado que la motivación teórica (Sección~\ref{sec:hybrid_attn} del Capítulo~\ref{cap:arquitectura}) lo predice.
+    \item \textbf{Modulación de la tasa de aprendizaje por etapa.} H-Net asigna tasas mayores a las etapas externas que procesan secuencias más largas \parencite{Hwang2025}. Nuestro entrenamiento usó una tasa única, y la curva no monótona del híbrido de 150M sugiere que el enrutamiento es sensible a este hiperparámetro.
+    \item \textbf{Fase de decaimiento más larga o programadores alternativos.} Dado que el híbrido de 350M mejoró 7.4\,\% solo en el último 25\,\% del entrenamiento, un programador con mayor fracción de decaimiento podría extraer mejoras adicionales sin datos nuevos.
+    \item \textbf{Enrutamiento suave o con temperatura.} El enrutamiento usa una decisión discreta con STE. Explorar versiones suaves (selección ponderada por probabilidad) podría suavizar el paisaje de optimización que presumiblemente causa la no-monotonía observada.
+\end{itemize}
+
+\section{Mejoras de implementación y eficiencia}
+
+El diagnóstico del cuello de botella del entrenamiento del híbrido indica un régimen limitado por eficiencia: el tiempo por paso escala en proporción a los FLOPs (1.53$\times$ de tiempo frente a 1.55$\times$ de FLOPs al pasar de 150M a 350M), con overhead fijo despreciable y una utilización estable de $\sim$10\,\% del pico bf16 de la A100. Las prioridades atacan por tanto esa constante de eficiencia, y el kernel ternario queda supeditado a la validación previa del resto.
+
+\begin{itemize}
+    \item \textbf{Gradient checkpointing para el híbrido.} Honrar la bandera de recomputación en el forward jerárquico (solo durante el entrenamiento) eliminaría la asimetría frente a las líneas base y reduciría la memoria de entrenamiento (15.5 GB a 150M, 27.9 GB a 350M), habilitando escalas mayores en una sola GPU.
+    \item \textbf{Kernels sobre pesos empaquetados.} Una ruta ternaria opcional que opere directamente sobre los pesos de 2 bits, con gradiente denso en el backward, evitaría el desempaquetado a FP32 en cada paso y convertiría la ventaja de memoria en ventaja de latencia; su techo está acotado mientras los GEMM operen al $\sim$10\,\% de eficiencia, por lo que se pospone hasta validar las mejoras anteriores.
+    \item \textbf{Recurrencia chunk-paralela en el forward jerárquico.} Conectar la variante chunk-paralela de la recurrencia al entrenamiento y prefill, con caída automática al modo recurrente en la generación paso a paso, aceleraría el entrenamiento y corregiría un caso límite numérico del dechunking.
+    \item \textbf{Fusión de proyecciones.} Fusionar las tres proyecciones de la convolución corta en un solo peso compartido, con reconstrucción automática al cargar checkpoints antiguos.
+    \item \textbf{Eliminación de sincronizaciones CPU--GPU.} Mantener los escalares por micro-paso (ratios de límites, pérdida acumulada) como tensores en GPU y extraerlos solo al momento del logging (+5--15\,\%).
+    \item \textbf{Cómputo único del ordenamiento de límites.} Calcular una sola vez el ordenamiento de la máscara de límites y compartirlo entre el chunking y el dechunking (+1--3\,\%).
+    \item \textbf{Configuración del asignador CUDA.} Usar segmentos expandibles para reducir la fragmentación de la memoria reservada (18.1 GB reservados frente a 15.4 asignados a 150M).
+    \item \textbf{Recurrencia paralela del MatMul-Free.} El bajo rendimiento de decodificación del MatMul-Free (28 tok/s a 150M) es el principal costo de su excelente BPB. Aplicar las técnicas de omisión condicional del híbrido o kernels de escaneo más agresivos podría recuperar parte de esa brecha.
+    \item \textbf{Comparación emparejada en FLOPs.} Replicar el protocolo de comparación con presupuestos de FLOPs iguales (además de bytes iguales) aclararía cuánto de la ventaja del MatMul-Free proviene de su mayor cómputo por byte, y ubicaría las arquitecturas en una frontera de Pareto honesta.
+    \item \textbf{Despliegue en hardware edge.} El tamaño de despliegue de 28--38 MB para 150M hace viable probar los modelos exportados en dispositivos de bajo consumo, validando la motivación de accesibilidad del trabajo.
+\end{itemize}
+
+El objetivo combinado es reducir el entrenamiento del híbrido de 150M de 80.6~h a $\sim$27--45~h (2--3$\times$) y su memoria pico a 11--13 GB a lote 8 (6--8 GB a lote 4), y a 350M de $\sim$123~h a $\sim$58--85~h.
+
+\section{Optimizaciones de velocidad de inferencia}
+
+El cuello de botella de los modelos ternarios en GPU es la velocidad, no la memoria (Capítulo~\ref{cap:discusion}). Las optimizaciones propuestas, en orden de esfuerzo:
+
+\begin{itemize}
+    \item \textbf{Inferencia en BF16.} Reduce a la mitad la memoria de pesos y mejora el rendimiento entre 1.5 y 2 veces.
+    \item \textbf{\texttt{torch.compile}.} Fusiona operaciones y reduce el overhead de Python en el forward, con una mejora de 1.3--2$\times$ en GPU.
+    \item \textbf{Fijación de hilos de CPU.} Variables de entorno que acotan los hilos de cómputo, con 1.5--2$\times$ en CPU, relevante para el despliegue edge.
+    \item \textbf{Caché de estado HGRN optimizada.} Evita recomputación en bloques cuyo estado apenas cambió, con 2--3$\times$ en contextos largos.
+    \item \textbf{Salida temprana sin límites.} Omite la etapa interna cuando no se detectan límites en un paso ($\sim$1.2$\times$).
+    \item \textbf{Batching de la etapa interna.} Acumula varios pasos de generación antes de despachar la etapa interna, convirtiendo su cuello de botella secuencial en procesamiento por lotes (2--4$\times$ en decodificación).
+    \item \textbf{Decodificación especulativa.} Un modelo auxiliar pequeño propone candidatos baratos, verificados en lote por la jerarquía completa (2--4$\times$).
+    \item \textbf{Kernel fusionado del camino por token.} Fusiona codificador, enrutamiento, chunking, etapa interna, dechunking y decodificador en un solo kernel que mantiene los intermedios en SRAM; es la mejora individual más grande disponible (3--5$\times$).
+    \item \textbf{Pipeline de etapas en varias GPU.} Asigna cada etapa de la jerarquía a una GPU distinta, con comunicación de límites y estados (2--4$\times$ con 4 GPU).
+    \item \textbf{Decodificación asíncrona.} Solapa la etapa $i$ del token $t$ con la etapa $i-1$ del token $t+1$ ($\sim$2$\times$).
+    \item \textbf{Pre-cuantización de pesos en inferencia.} Cuantiza los pesos una sola vez y omite la cuantización de activaciones, eliminando dos de cada tres operaciones por capa lineal (2--3$\times$).
+\end{itemize}

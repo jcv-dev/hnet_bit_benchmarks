@@ -1,105 +1,651 @@
-\section{Arquitectura del modelo HNetBit}
+\chapter{Arquitectura del modelo propuesto HNetBit}
+\label{cap:arquitectura}
 
-En esta sección se describe en detalle la arquitectura del modelo híbrido propuesto, denominado HNetBit, que constituye el núcleo de esta investigación. La exposición se organiza desde los componentes más básicos hasta el sistema completo, destacando las innovaciones en cuantización ternaria, recurrencia HGRN y chunking dinámico jerárquico.
+En este capítulo se describe en detalle la arquitectura del modelo híbrido propuesto, denominado HNetBit (\textit{Hierarchical Network with BitLinear ternary weights}), que constituye el núcleo de esta investigación. La exposición se organiza desde los componentes más básicos hasta el sistema completo, presentando las innovaciones en cuantización ternaria, recurrencia HGRN y chunking dinámico jerárquico, así como sus fundamentos matemáticos y computacionales.
 
-\subsection{Cuantización ternaria y capa BitLinear}
+\section{Visión general de la arquitectura}
 
-Todas las proyecciones lineales del modelo (con excepción de la tabla de embeddings y la proyección residual de cada etapa) utilizan la capa \texttt{BitLinear}, que reemplaza las multiplicaciones de punto flotante por operaciones de acumulación ternaria. La cuantización se aplica tanto a los pesos como a las activaciones durante el paso forward, manteniendo los pesos completos en el backward mediante el estimador de paso directo (STE).
+HNetBit es un modelo de lenguaje autorregresivo que opera directamente sobre bytes, eliminando por completo la necesidad de tokenización. La arquitectura integra tres innovaciones principales:
 
-\subsubsection{Cuantización de pesos}
+\begin{enumerate}
+\item \textbf{Cuantización ternaria}: todas las proyecciones lineales del modelo (con excepción de la tabla de \textit{embeddings} y la proyección residual de cada etapa) utilizan la capa \texttt{BitLinear}, que reemplaza las multiplicaciones de punto flotante por acumulaciones ternarias con pesos en $\{-1, 0, +1\}$, equivalente a aproximadamente 1.58 bits por parámetro.
+\item \textbf{Recurrencia HGRN} (\textit{Hierarchically Gated Recurrent Network}): un mecanismo de mezcla de secuencia con complejidad $O(L)$ en entrenamiento y $O(1)$ por paso en inferencia, que sustituye a la autoatención cuadrática del Transformer.
+\item \textbf{Chunking dinámico multi-etapa}: un sistema de segmentación jerárquica aprendida que comprime la secuencia recursivamente, eliminando la necesidad de un tokenizador predefinido.
+\end{enumerate}
 
-Dada una matriz de pesos $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$, el proceso de cuantización ternaria es:
+El modelo se organiza como una jerarquía de etapas (\textit{stages}), donde cada etapa no interna contiene un módulo de enrutamiento que decide dinámicamente qué posiciones de la secuencia constituyen límites de fragmentos (\textit{chunks}). Los \textit{chunks} resultantes se procesan recursivamente por la siguiente etapa, permitiendo que el modelo aprenda representaciones cada vez más abstractas.
 
-\[
-\alpha = \frac{1}{\text{mean}(|W|)} \quad \text{(valor escalar por tensor)},
-\]
-\[
-W_q = \frac{\text{round\_clamp}(W \cdot \alpha, -1, 1)}{\alpha},
-\]
+HNetBit está diseñado para operar en dos regímenes distintos: \textbf{entrenamiento} e \textbf{inferencia autorregresiva}. La mayoría de los componentes arquitectónicos (codificadores, decodificadores, bloques HGRN, capas BitLinear, módulos de chunking) se utilizan en ambos. Sin embargo, ciertos elementos son exclusivos de cada régimen:
+\begin{itemize}
+    \item \textbf{Exclusivos de entrenamiento}: el estimador STE dentro de BitLinear (cuyo efecto desaparece bajo \texttt{torch.no\_grad()}), la pérdida de balanceo de carga $\mathcal{L}_{\text{LB}}$, la entropía cruzada $\mathcal{L}_{\text{CE}}$, y el kernel \texttt{chunk\_hgrn} para recurrencia paralela en secuencias largas.
+    \item \textbf{Exclusivos de inferencia}: la estructura de caché \texttt{HNetBitCache} y todas sus subcachés, el kernel \texttt{fused\_recurrent\_hgrn} para recurrencia secuencial paso a paso, los estados \texttt{RoutingModuleState} y \texttt{DeChunkState}, y la lógica de omisión condicional de la etapa interna para tokens no-límite. En la variante de despliegue compacto (\textit{deployment}), los pesos ternarios se congelan y precuantizan, eliminando la necesidad de re-ejecutar \texttt{weight\_quant} en cada paso.
+\end{itemize}
+Las secciones siguientes detallan cada componente, indicando explícitamente cuándo su uso es exclusivo de un régimen o compartido.
 
-donde $\text{round\_clamp}$ redondea al entero más cercano y luego limita al rango $[-1, 1]$. El resultado $W_q$ contiene únicamente los valores $\{-\alpha, 0, +\alpha\}$. Durante el entrenamiento, se aplica STE:
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.6\linewidth]{Recursos/architecture_hnetbit.png}
+    \caption[Arquitectura del modelo HNetBit.]{Arquitectura del modelo HNetBitForCausalLM. El panel izquierdo muestra el pipeline principal desde la entrada de bytes hasta los logits de salida, con el flujo ascendente a través del codificador, chunking, modelo central, dechunking y decodificador. El panel derecho detalla los cuatro componentes del mecanismo de \textit{dynamic chunking}: (a) módulo de enrutamiento basado en similitud coseno, (b) submuestreador que selecciona los tokens límite mediante argsort, (c) módulo de suavizado mediante media móvil exponencial (EMA) y (d) sobre-muestreador que reconstruye la secuencia completa. Los colores consistentes (azul, verde, naranja) representan cuatro fragmentos distintos a través de todo el proceso.}
+    \label{fig:hnetbit-arch}
+\end{figure}
 
-\[
-W_{\text{forward}} = W_q, \qquad 
-\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial W_q} \quad \text{(identidad)}.
-\]
+\section{Cuantización ternaria y capa BitLinear}
 
-\subsubsection{Cuantización de activaciones}
+La cuantización ternaria constituye el mecanismo principal de eficiencia computacional en el modelo propuesto. A continuación se describen los fundamentos teóricos y la implementación matemática de este esquema.
 
-Las activaciones de entrada a cada BitLinear se normalizan con RMSNorm y luego se cuantizan a 8 bits por token:
+\subsection{Fundamentos de la cuantización ternaria}
 
-\[
-x_{\text{norm}} = \text{RMSNorm}(x), \quad
-\beta = \frac{127}{\max(|x_{\text{norm}}|)}, \quad
-x_q = \frac{\text{round\_clamp}(x_{\text{norm}} \cdot \beta, -128, 127)}{\beta}.
-\]
+La cuantización ternaria representa cada peso $w \in \mathbb{R}$ mediante un valor en el conjunto discreto $\{-1, 0, +1\}$. La entropía de esta representación es $\log_2 3 \approx 1.58$ bits por parámetro \parencite{Ma2024}. Esta reducción drástica en precisión numérica permite reemplazar las operaciones de multiplicación de punto flotante por simples sumas, restas u omisiones: para cada peso $w_q \in \{-1, 0, +1\}$, la contribución a la salida es $w_q \cdot x$, que equivale a sumar $x$, restar $x$ o no hacer nada.
 
-Esta cuantización simétrica (sin punto cero) simplifica la implementación en hardware y mantiene la precisión suficiente para la tarea de modelado de lenguaje.
+\subsection{Cuantización de pesos}
 
-\subsection{Recurrencia HGRN (\textit{Hierarchically Gated Recurrent Network})}
+Dada una matriz de pesos $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$, el proceso de cuantización ternaria sigue el método \texttt{absmean} \parencite{Ma2024}:
 
-El modelo utiliza HGRN como mecanismo de mezcla de secuencia en lugar de atención. La recurrencia se define como:
+\begin{equation}
+\alpha = \frac{1}{\text{mean}(|W|)} \in \mathbb{R},
+\end{equation}
 
-\[
+\begin{equation}
+W_q = \frac{\text{round\_clamp}(W \cdot \alpha, -1, 1)}{\alpha} \in \left\{-\frac{1}{\alpha}, 0, \frac{1}{\alpha}\right\}^{d_{\text{out}} \times d_{\text{in}}},
+\end{equation}
+
+donde $\text{round\_clamp}(x, a, b)$ redondea cada elemento de $x$ al entero más cercano y luego lo limita al rango $[a, b]$. El factor de escala $\alpha$ se calcula por tensor completo y se almacena implícitamente: durante el entrenamiento, la división por $\alpha$ se cancela en la multiplicación lineal subsiguiente, por lo que el cómputo efectivo utiliza los valores enteros $\{-1, 0, +1\}$.
+
+La función de cuantización es no diferenciable. Para permitir el entrenamiento mediante backpropagation, se utiliza el estimador de paso directo (\textit{Straight-Through Estimator}, STE), que aproxima el gradiente de la cuantización como la identidad \parencite{Bengio2013}:
+
+\begin{equation}
+W_{\text{forward}} = W_q, \qquad
+\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial W_q}.
+\end{equation}
+
+Durante el paso backward, los gradientes fluyen a través de los pesos completos en precisión original, permitiendo que el optimizador actualice los pesos de punto flotante que luego serán recuantizados en el siguiente paso forward.
+
+\subsection{Cuantización de activaciones}
+
+Las activaciones de entrada a cada capa \texttt{BitLinear} se normalizan primero con RMSNorm y luego se cuantizan a 8 bits enteros. La cuantización es simétrica (sin punto cero) y se aplica por token:
+
+\begin{equation}
+x_{\text{norm}} = \text{RMSNorm}(x) \in \mathbb{R}^{B \times L \times d},
+\end{equation}
+
+\begin{equation}
+\beta_t = \frac{127}{\max(|x_{\text{norm}, t}|)} \in \mathbb{R}, \quad
+x_{q, t} = \frac{\text{round\_clamp}(x_{\text{norm}, t} \cdot \beta_t, -128, 127)}{\beta_t},
+\end{equation}
+
+donde $t$ indexa la dimensión del token (posición en la secuencia). La cuantización simétrica simplifica la implementación en hardware al eliminar la necesidad de un punto cero, manteniendo la precisión suficiente para la tarea de modelado de lenguaje.
+
+\subsection{Capa BitLinear}
+
+La capa \texttt{BitLinear} integra la normalización y la doble cuantización (pesos y activaciones) en un módulo unificado. Dada una entrada $x \in \mathbb{R}^{B \times L \times d_{\text{in}}}$ y una matriz de pesos $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$, el paso forward es:
+
+\begin{equation}
+\begin{aligned}
+x_{\text{norm}} &= \text{RMSNorm}(x), \\
+\tilde{x} &= x_{\text{norm}} + \bigl(\text{activation\_quant}(x_{\text{norm}}) - x_{\text{norm}}\bigr).\text{detach()}, \\
+\tilde{W} &= W + \bigl(\text{weight\_quant}(W) - W\bigr).\text{detach()}, \\
+y &= \text{Linear}(\tilde{x}, \tilde{W}).
+\end{aligned}
+\end{equation}
+
+La operación \texttt{detach()} en ambos términos implementa el STE: durante el paso forward se utilizan los valores cuantizados; durante el backward, el gradiente fluye a través de la versión completa (no cuantizada) de $x$ y $W$, ignorando la no-diferenciabilidad de las funciones de cuantización. El STE es un mecanismo \textbf{exclusivo de entrenamiento}: durante la inferencia autorregresiva el modelo opera bajo \texttt{torch.no\_grad()}, por lo que no se calculan gradientes y el patrón \texttt{detach()} es inocuo.
+
+En la variante de despliegue compacto (\textit{deployment}), los pesos se congelan y precuantizan una sola vez al exportar el modelo, almacenándose directamente en su forma ternaria empaquetada ($\approx 2.1$ bits/parámetro). Esto elimina la necesidad de ejecutar \texttt{weight\_quant} en cada paso de inferencia, reduciendo tanto el cómputo como la memoria requerida.
+
+Esta doble cuantización convierte la multiplicación de matrices en una acumulación ternaria. Dado que los pesos cuantizados pertenecen a $\{-1, 0, +1\}$, la operación lineal $y = \tilde{W} \cdot \tilde{x}$ se reduce a sumas y restas selectivas de los elementos de $\tilde{x}$, eliminando las multiplicaciones de punto flotante que constituyen el principal costo computacional en las capas lineales estándar.
+
+\subsection{Variante fusionada: FusedBitLinear}
+\label{sec:fused_bitlinear}
+
+Para maximizar la eficiencia en GPU, se implementó una variante \texttt{FusedBitLinear} que fusiona la normalización RMSNorm, la cuantización de activaciones y la multiplicación ternaria en un solo kernel Triton \parencite{Tillet2019}. Este kernel reduce los viajes de ida y vuelta entre la memoria HBM (\textit{High Bandwidth Memory}) y la SRAM (\textit{Shared Memory}) en un factor de $3\times$, al procesar todas las operaciones en una sola pasada de datos.
+
+El kernel utiliza un esquema de bloque por fila/columna con autotuning sobre el número de \textit{warps} $\{1, 2, 4, 8, 16, 32\}$, seleccionando la configuración óptima según la dimensión del modelo. En el paso backward, el kernel implementa recomputación de la salida para ahorrar memoria, evitando almacenar los tensores intermedios de activación cuantizada.
+
+Sin Triton (CPU o Docker sin privilegios), \texttt{FusedBitLinear} usa \texttt{BitLinear.forward()} puro. La variable \texttt{HNETBIT\_DISABLE\_TRITON} controla este fallback.
+
+\subsection{Normalización RMSNorm}
+
+La normalización RMSNorm (\textit{Root Mean Square Layer Normalization}) \parencite{Zhang2019} se utiliza como alternativa a LayerNorm en todo el modelo, debido a su menor costo computacional al eliminar la estimación de la media:
+
+\begin{equation}
+\text{RMSNorm}(x) = \frac{x}{\sqrt{\text{mean}(x^2) + \epsilon}} \odot \gamma,
+\end{equation}
+
+donde $\gamma \in \mathbb{R}^{d}$ es un vector de escala aprendible y $\epsilon$ es una constante de estabilidad numérica. RMSNorm se aplica siguiendo el patrón de pre-normalización residual (\textit{pre-norm residual}): cada subcapa (atención o MLP) recibe la entrada normalizada antes de la transformación, y la salida se suma a la conexión residual:
+
+\begin{equation}
+x^\prime = x + f(\operatorname{RMSNorm}(x)),
+\end{equation}
+
+donde $f$ representa la subcapa correspondiente.
+
+\section{Recurrencia HGRN}
+
+El mecanismo de mezcla de secuencia principal del modelo es la \textit{Hierarchically Gated Recurrent Network} (HGRN), que reemplaza completamente a la autoatención del Transformer. Esta sección describe su formulación matemática, componentes auxiliares e implementación computacional.
+
+\subsection{Motivación}
+
+La autoatención en el Transformer tiene complejidad $O(L^2 \cdot d)$ en tiempo y $O(L^2)$ en memoria, lo que limita el escalado a secuencias largas. La recurrencia HGRN ofrece tres ventajas fundamentales:
+
+\begin{itemize}
+\item \textbf{Complejidad lineal}: $O(L)$ en entrenamiento y $O(1)$ por paso en inferencia.
+\item \textbf{Estado oculto de tamaño fijo}: a diferencia del \textit{KV cache} del Transformer, que crece linealmente con la longitud de secuencia, el estado recurrente ocupa $O(d)$ independientemente de $L$.
+\item \textbf{Eficiencia en hardware}: las operaciones elemento a elemento se benefician de la arquitectura SIMT (\textit{Single Instruction, Multiple Threads}) de las GPUs modernas.
+\end{itemize}
+
+\subsection{Formulación matemática}
+
+Dado un token $x_t \in \mathbb{R}^{d}$ en la posición $t$, el HGRN actualiza un estado oculto $h_t \in \mathbb{R}^{d}$ mediante tres compuertas principales:
+
+\begin{equation}
 \begin{aligned}
 f_t &= \sigma\bigl(\text{BitLinear}_f(x_t)\bigr) \in (0,1)^d, \\
 i_t &= \text{SwiGLU}\bigl(\text{BitLinear}_i(x_t),\; \mathbf{1} - f_t\bigr), \\
 h_t &= f_t \odot h_{t-1} + i_t, \\
 o_t &= \text{FusedRMSNormSwishGate}\bigl(\text{BitLinear}_g(x_t),\; h_t\bigr).
 \end{aligned}
-\]
+\end{equation}
 
-La operación $\odot$ denota el producto de Hadamard. El estado oculto $h_t \in \mathbb{R}^d$ tiene tamaño fijo, lo que otorga a la recurrencia complejidad $O(L)$ en entrenamiento y $O(1)$ por paso en inferencia. Para acelerar el entrenamiento en GPU, se implementan dos kernels Triton:
+donde $\sigma$ es la función sigmoide, $\odot$ denota el producto de Hadamard, $\mathbf{1}$ es un vector de unos, y $f_t$, $i_t$ son las compuertas de olvido (\textit{forget gate}) y entrada (\textit{input gate}) respectivamente.
 
-\begin{itemize}
-\item \texttt{fused\_recurrent\_hgrn}: recorre la secuencia secuencialmente pero paraleliza a través de la dimensión de cabezas.
-\item \texttt{chunk\_hgrn}: divide la secuencia en fragmentos de 64 pasos, procesa intra-fragmento en paralelo y luego combina estados entre fragmentos. Este es el kernel utilizado por defecto para secuencias largas.
-\end{itemize}
+La compuerta de olvido $f_t$ controla qué fracción del estado anterior se retiene. La compuerta de entrada utiliza un mecanismo de compuerta complementaria: $i_t$ se obtiene aplicando SwiGLU sobre la proyección de entrada y el complemento de la compuerta de olvido $1 - f_t$. Esto crea una dependencia directa entre la retención y la incorporación de nueva información: cuando $f_t$ es alto (mucha retención), $1 - f_t$ es bajo, por lo que se incorpora poca información nueva, y viceversa.
 
-\subsection{Chunking dinámico multi-etapa}
+El estado oculto $h_t$ es una interpolación lineal entre el estado anterior $h_{t-1}$ y la entrada transformada $i_t$, ponderada por las compuertas:
 
-La jerarquía HNetBit reduce la longitud de la secuencia en cada etapa mediante un mecanismo de chunking aprendido. Para una etapa $s$ con entrada $H \in \mathbb{R}^{B \times L \times D_s}$, el proceso es:
+\begin{equation}
+h_t = f_t \odot h_{t-1} + (\mathbf{1} - f_t) \odot \tilde{i}_t,
+\end{equation}
+
+donde $\tilde{i}_t$ es la entrada después de SwiGLU. Esta formulación es similar a la de una GRU (\textit{Gated Recurrent Unit}) \parencite{Cho2014}, pero con la diferencia fundamental de que todas las proyecciones utilizan cuantización ternaria en lugar de pesos completos.
+
+\subsection{Mecanismo multi-cabeza}
+
+Para aumentar la capacidad expresiva, HGRN soporta múltiples cabezas recurrentes. El estado oculto se redimensiona de $(B, L, d_{\text{hidden}})$ a $(B, H, L, D_{\text{head}})$, donde $H$ es el número de cabezas, $D_{\text{head}} = (d_{\text{hidden}} \cdot r) / H$ es la dimensión por cabeza y $r$ es el factor de expansión del estado (\texttt{expand\_ratio}). La recurrencia se aplica independientemente en cada cabeza:
+
+\begin{equation}
+h_{t}^{(c)} = f_{t}^{(c)} \odot h_{t-1}^{(c)} + i_{t}^{(c)},\quad c = 1, \ldots, H.
+\end{equation}
+
+La paralelización a través de las cabezas permite un uso eficiente de las GPUs, ya que cada hilo puede procesar una cabeza diferente de forma independiente.
+
+\subsection{Función de activación SwiGLU}
+\label{sec:swiglu}
+
+La función SwiGLU (\textit{Sigmoid-weighted Linear Unit with Gating}) \parencite{Shazeer2020} combina la activación Swish con una compuerta multiplicativa:
+
+\begin{equation}
+\text{SwiGLU}(x, g) = \text{Swish}(x) \odot g = \frac{x \odot g}{1 + e^{-x}}.
+\end{equation}
+
+La implementación en el modelo utiliza un kernel CUDA optimizado mediante la interfaz jiterator, con funciones forward y backward fusionadas para minimizar la sobrecarga de lanzamiento de kernels.
+
+\subsection{Normalización de compuerta fusionada}
+\label{sec:fused_norm_gate}
+
+La salida del HGRN se procesa mediante \texttt{FusedRMSNormSwishGate}, un módulo que fusiona la normalización RMSNorm y una compuerta Swish en un solo kernel Triton. La operación combinada es:
+
+\begin{equation}
+o_t = \text{RMSNorm}\bigl(\text{BitLinear}_g(x_t)\bigr) \odot h_t \odot \sigma(h_t).
+\end{equation}
+
+Esta fusión cuadruplica la eficiencia al reducir cuatro operaciones separadas (normalización, proyección $g$, multiplicación por $h$, y activación compuerta sigmoide) a un solo lanzamiento de kernel con autotuning.
+
+\subsection{Convolución corta (\textit{Short Convolution})}
+
+Opcionalmente, cada bloque HGRN puede incluir una convolución causal unidimensional profunda (\textit{depthwise}) antes de las proyecciones recurrentes. Esta convolución, de tamaño de kernel 4, proporciona un sesgo inductivo local que ayuda al modelo a capturar patrones de corto alcance (como bigramas y trigramas a nivel de bytes) antes de la mezcla recurrente global:
+
+\begin{equation}
+x^\prime_t = \operatorname{Conv1D}_{\text{causal}}(x_{0:t}, \operatorname{kernel\_size}=4).
+\end{equation}
+
+El modelo soporta dos modos de convolución: \texttt{compartido} (una convolución sobre los estados ocultos antes de proyectar, que es más eficiente) y \texttt{separado} (convoluciones independientes sobre cada flujo proyectado $i$, $f$ y $g$, que ofrece mayor capacidad). La convolución corta es particularmente útil en el modelo híbrido (habilitada por defecto) para compensar la ausencia de atención local en las etapas externas.
+
+\subsection{Kernels de recurrencia}
+\label{sec:hgrn_kernels}
+
+La recurrencia HGRN se implementa mediante dos kernels Triton especializados, optimizados para diferentes regímenes de operación:
+
+\textbf{Kernel recurrente fusionado} (\texttt{fused\_recurrent\_hgrn}): implementa la recurrencia secuencial pura, iterando sobre la dimensión temporal en un solo kernel:
+
+\begin{equation}
+h_t = g_t \odot h_{t-1} + x_t,
+\end{equation}
+
+donde $g_t = f_t$ (la compuerta de olvido ya transformada por sigmoide). Este kernel paraleliza a través de la dimensión de cabezas y el tamaño de lote, pero procesa el tiempo secuencialmente. Opera en espacio de probabilidad ($g_t \in (0,1)$), lo que es numéricamente estable para pasos individuales. \textbf{Es el kernel utilizado durante la inferencia autorregresiva}, donde la longitud de secuencia es 1, y también para secuencias cortas durante el entrenamiento. Los estados recurrentes se mantienen en registros de SRAM, evitando accesos a HBM.
+
+\textbf{Kernel por fragmentos} (\texttt{chunk\_hgrn}): implementa un algoritmo de escaneo paralelo que divide la secuencia en fragmentos de tamaño $C = 128$:
+
+\begin{equation}
+h_t = \exp(g_t) \odot h_{t-1} + x_t,
+\end{equation}
+
+donde $g_t$ está en espacio logarítmico (\textit{log-space}). La razón de esta diferencia es que la multiplicación repetida de probabilidades $g_t \in (0,1)$ causa \textit{underflow} numérico en secuencias largas; en espacio logarítmico, las multiplicaciones se convierten en sumas ($\exp(a) \cdot \exp(b) = \exp(a+b)$), lo que permite acumular las compuertas de forma estable a través de cientos de posiciones. El algoritmo procesa intra-fragmento de forma secuencial dentro de cada kernel, pero en paralelo a través de fragmentos. Luego, un segundo kernel aplica la corrección entre fragmentos utilizando la acumulación de compuertas logarítmicas. Este enfoque reduce la latencia de $O(L)$ a $O(L/C)$ pasos seriales, acelerando significativamente el entrenamiento en secuencias largas. \textbf{Es el kernel utilizado durante el entrenamiento} cuando la longitud de secuencia supera el umbral del fragmento.
+
+La Tabla \ref{tab:hgrn_kernels} resume las diferencias entre ambos kernels.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\caption{Kernels de recurrencia HGRN}
+\label{tab:hgrn_kernels}
+\begin{tabular}{lll}
+\toprule
+Propiedad & \texttt{fused\_recurrent} & \texttt{chunk} \\
+\midrule
+Fórmula & $h_t = g_t \cdot h_{t-1} + x_t$ & $h_t = \exp(g_t) \cdot h_{t-1} + x_t$ \\
+Representación de $g$ & Probabilidad $(0,1)$ & \textit{Log-space} $\mathbb{R}$ \\
+Complejidad serial & $O(L)$ & $O(L/C)$ \\
+Uso principal & Inferencia & Entrenamiento \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Chunking dinámico multi-etapa}
+
+El mecanismo de chunking dinámico constituye la segunda innovación central del modelo, permitiendo el aprendizaje de estrategias de segmentación jerárquica sin dependencia de un tokenizador predefinido.
+
+\subsection{Fundamento teórico}
+
+El chunking dinámico se basa en el principio de que la segmentación óptima de una secuencia es inherentemente contextual y debe ser aprendida a partir de los datos, no impuesta por reglas estadísticas fijas \parencite{Hwang2025}. La intuición subyacente es que la incertidumbre predictiva es máxima en las transiciones entre unidades semánticas (caracteres, subpalabras, palabras, frases), y que el modelo debe aprender a identificar estos límites de extremo a extremo.
+
+Conceptualmente, la jerarquía multi-etapa comprime progresivamente la secuencia de entrada. En la etapa más externa, cada posición corresponde a un byte individual. La primera etapa de chunking agrupa bytes en fragmentos que se aproximan a caracteres o sílabas. Las etapas sucesivas agrupan estos fragmentos en unidades cada vez más abstractas (palabras, frases).
+
+\subsection{Módulo de enrutamiento (\textit{RoutingModuleBit})}
+
+El módulo de enrutamiento decide dinámicamente qué posiciones de la secuencia constituyen límites de fragmentos. Opera en dos modos: \textbf{modo lote} (entrenamiento y prefill), donde recibe la secuencia completa de una vez, y \textbf{modo paso a paso} (generación autorregresiva), donde recibe un token a la vez manteniendo un estado. Opera en precisión completa (\texttt{nn.Linear}, no \texttt{BitLinear}) porque las decisiones de límite son sensibles al ruido de cuantización. Las proyecciones se inicializan como matrices identidad para estabilizar el inicio del entrenamiento.
+
+Dado un estado oculto $H \in \mathbb{R}^{B \times L \times d}$ a la salida del codificador de una etapa, el enrutamiento calcula la similitud coseno entre proyecciones de tokens consecutivos:
+
+\begin{equation}
+\begin{aligned}
+q_t &= \text{normalize}\bigl(\text{Linear}_q(H[t])\bigr) \in \mathbb{R}^d, \\
+k_{t+1} &= \text{normalize}\bigl(\text{Linear}_k(H[t+1])\bigr) \in \mathbb{R}^d, \\
+\text{cos\_sim}_t &= \langle q_t, k_{t+1} \rangle \in [-1, 1], \\
+p_t &= \text{clamp}\left(\frac{1 - \text{cos\_sim}_t}{2}, 0, 1\right).
+\end{aligned}
+\end{equation}
+
+La probabilidad $p_t \in [0, 1]$ mide la disimilitud semántica entre tokens consecutivos: un valor cercano a 1 indica alta disimilitud, sugiriendo que existe un límite de fragmento entre $t$ y $t+1$. La primera posición se fuerza como límite ($p_0 = 1$) para garantizar que todos los fragmentos tengan al menos un elemento.
+
+La decisión binaria se obtiene mediante \texttt{argmax}:
+
+\begin{equation}
+m_t = \mathbb{1}[\text{argmax}([1-p_t, p_t]) = 1],
+\end{equation}
+
+donde $\mathbb{1}$ es la función indicadora. Esta operación es no diferenciable, pero el gradiente fluye a través de $p_t$ mediante el STE en la conexión residual posterior.
+
+Durante la generación paso a paso, el módulo usa un estado (\texttt{RoutingModuleState}) con el último estado oculto y un booleano de tokens vistos. La probabilidad de límite se calcula comparando la proyección $k$ del token actual con la proyección $q$ del anterior:
+
+\begin{equation}
+p_{\text{step}} = \text{clamp}\left(\frac{1 - \langle q_{\text{prev}}, k_{\text{curr}} \rangle}{2}, 0, 1\right).
+\end{equation}
+
+\subsection{Capa de chunking (\textit{ChunkLayer})}
+
+La capa \texttt{ChunkLayer} no tiene parámetros aprendibles; es una operación pura de selección que extrae los tokens en las posiciones marcadas como límites por la máscara $m_t$.
+
+En modo rellenado (\textit{padded mode}), que es el modo por defecto durante el entrenamiento, la capa utiliza un ordenamiento (\texttt{argsort}) para llevar los tokens límite al inicio del tensor:
+
+\begin{equation}
+\text{token\_idx}_t = t + (\neg m_t) \cdot L, \quad
+\text{indices} = \text{argsort}(\text{token\_idx}),
+\end{equation}
+
+donde $L$ es la longitud original. Este procedimiento asigna claves pequeñas ($< L$) a los tokens límite y claves grandes ($\ge L$) a los no límite, permitiendo recoger los primeros $M$ tokens como entrada para la siguiente etapa, donde $M = \max_i \sum_t m_{i,t}$ es el máximo n\'umero de l\'imites entre todas las secuencias del lote. La m\'ascara de salida $M_{\text{chunk}}$ se construye truncando la m\'ascara original a las primeras $M$ posiciones y enmascarando como inv\'alidas aquellas que exceden el n\'umero real de l\'imites de cada secuencia.
+
+En modo empaquetado (\textit{packed mode}), utilizado para secuencias de longitud variable concatenadas, la selección es directa mediante indexación booleana.
+
+
+\subsection{Capa de reconstrucción (\textit{DeChunkLayer})}
+
+La capa \texttt{DeChunkLayer} reconstruye la secuencia original a partir de los fragmentos procesados por la etapa interna, utilizando una media móvil exponencial (\textit{Exponential Moving Average}, EMA). La intuición es que la información de cada fragmento debe propagarse suavemente a todas las posiciones que abarca.
+
+El EMA se define como:
+
+\begin{equation}
+\text{out}_t = p_t \cdot \text{chunk}_t + (1 - p_t) \cdot \text{out}_{t-1},
+\end{equation}
+
+donde $p_t$ es la probabilidad de límite en la posición $t$ y $\text{chunk}_t$ es el vector del fragmento correspondiente. En las posiciones donde $p_t = 1$ (límites), la salida se iguala al valor del fragmento; en las posiciones donde $p_t \approx 0$ (no límites), la salida es aproximadamente el valor del fragmento anterior.
+
+Esta formulación es equivalente a la recurrencia HGRN:
+
+\begin{equation}
+h_t = g_t \odot h_{t-1} + x_t,
+\end{equation}
+
+con la correspondencia $g_t = 1 - p_t$ y $x_t = p_t \cdot \text{hidden}_t$. Por lo tanto, la reconstrucción puede implementarse eficientemente utilizando el mismo kernel \texttt{fused\_recurrent\_hgrn} que la recurrencia principal, operando sobre los $M$ tokens límite.
+
+La propagación a todas las $L$ posiciones se realiza mediante un índice de retroceso (\textit{plug-back}):
+\begin{equation}
+\text{plug\_back\_idx}_t = \text{cumsum}(m, t) - 1 \in \{0, \ldots, M-1\},
+\end{equation}
+que mapea cada posición $t$ al fragmento que la contiene, permitiendo una difusión paralela de los valores EMA a través de \texttt{torch.gather}.
+
+\subsection{Pérdida de balanceo de carga (\textit{Load-Balancing Loss})}
+\label{sec:lb_loss}
+
+Para evitar que el módulo de enrutamiento colapse a soluciones degeneradas (todos los tokens son límites o ningún token es límite), se introduce una pérdida auxiliar de balanceo de carga \parencite{Hwang2025} que se utiliza \textbf{exclusivamente durante el entrenamiento}. Dado el factor de submuestreo esperado $N$ (que representa la longitud promedio de fragmento en bytes), la pérdida para una etapa se define como:
+
+\begin{equation}
+\mathcal{L}_{\text{LB}} = \frac{N}{N-1} \left[ (1 - \hat{m}) \cdot (1 - \bar{p}) + \hat{m} \cdot \bar{p} \cdot (N-1) \right],
+\end{equation}
+
+donde $\hat{m} = \frac{1}{L} \sum_t m_t$ es la fracción de límites predichos y $\bar{p} = \frac{1}{L} \sum_t p_t$ es la probabilidad promedio de límite. Esta función tiene un único mínimo cuando la fracción de límites es aproximadamente $1/N$ (es decir, la longitud promedio de fragmento es $N$).
+
+La pérdida total del modelo en entrenamiento es:
+
+\begin{equation}
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{CE}} + \lambda_{\text{LB}} \sum_{s} \mathcal{L}_{\text{LB}}^{(s)},
+\end{equation}
+
+donde $s$ indexa las etapas de chunking y $\lambda_{\text{LB}}$ es un hiperparámetro que controla la fuerza del balanceo.
+
+\section{Estructura de bloques}
+
+Los componentes anteriores se organizan en tres tipos de bloques que forman las unidades computacionales básicas del modelo.
+
+\subsection{Bloque HGRNBitAttention}
+
+El bloque \texttt{HGRNBitAttention} implementa la recurrencia completa con todos sus componentes auxiliares. El flujo de procesamiento es:
 
 \begin{enumerate}
-\item \textbf{Codificación}: $H_{\text{enc}} = \text{Stack}_{\text{enc}}(H)$ (múltiples bloques HGRNBitBlock).
-\item \textbf{Enrutamiento}: Se calcula la similitud coseno entre tokens consecutivos después de una proyección:
-\[
-q_t = \text{normalize}\bigl(\text{BitLinear}_q(H_{\text{enc}}[t])\bigr),\quad
-k_{t+1} = \text{normalize}\bigl(\text{BitLinear}_k(H_{\text{enc}}[t+1])\bigr),
-\]
-\[
-p_t = \frac{1 - \langle q_t, k_{t+1} \rangle}{2} \in [0,1].
-\]
-La probabilidad $p_t$ indica cuán probable es que exista un límite de chunk entre $t$ y $t+1$. La primera posición se fuerza como límite ($p_0=1$). La máscara binaria $m_t = \text{argmax}([1-p_t, p_t])$ se obtiene mediante una operación no diferenciable, pero el gradiente fluye a través de $p_t$ gracias al STE en la conexión residual posterior.
-\item \textbf{Chunking}: Se seleccionan las posiciones donde $m_t=1$, extrayendo un tensor $H_{\text{chunk}} \in \mathbb{R}^{B \times M \times D_s}$ con $M \ll L$.
-\item \textbf{Red principal}: Si la etapa no es la más interna, $H_{\text{chunk}}$ se procesa recursivamente por una instancia de HNetBit de la siguiente etapa; si es la más interna, se procesa por un \texttt{HGRNBitStack} adicional.
-\item \textbf{Dechunking}: Se reconstruye la secuencia original utilizando una media móvil exponencial:
-\[
-\text{out}_t = p_t \cdot \text{expandido}_t + (1-p_t) \cdot \text{out}_{t-1},
-\]
-donde $\text{expandido}_t$ es el vector del chunk correspondiente a la posición $t$.
-\item \textbf{Decodificación}: $H_{\text{out}} = \text{Stack}_{\text{dec}}( \text{out} \cdot \text{STE}(p) + H_{\text{res}} )$, donde $H_{\text{res}}$ es una proyección residual full-precision inicializada a cero.
+\item \textbf{Convolución corta} (opcional): $\tilde{x} = \text{Conv1D}_{\text{causal}}(x)$.
+\item \textbf{Proyecciones ternarias}: $i = \text{BitLinear}_i(\tilde{x})$, $f = \text{BitLinear}_f(\tilde{x})$, $g = \text{BitLinear}_g(\tilde{x})$.
+\item \textbf{Compuerta de olvido}: $f = \sigma(f)$.
+\item \textbf{Compuerta de entrada}: $i = \text{SwiGLU}(i, \mathbf{1} - f)$.
+\item \textbf{Recurrencia}: $h = \text{HGRN}(i, f, h_{\text{prev}})$.
+\item \textbf{Normalización de salida}: $o = \text{FusedRMSNormSwishGate}(g, h)$.
+\item \textbf{Proyección de salida}: $o = \text{BitLinear}_o(o)$.
 \end{enumerate}
 
-Este diseño permite que el modelo aprenda a segmentar el texto en unidades cada vez más abstractas (caracteres $\rightarrow$ subpalabras $\rightarrow$ palabras $\rightarrow$ frases) de forma completamente end-to-end, sin tokenizador predefinido.
+Cada una de las proyecciones utiliza la capa \texttt{BitLinear} con cuantización ternaria. El bloque mantiene un estado recurrente $h_{\text{prev}}$ que se actualiza en cada paso temporal.
 
-\subsection{Arquitectura global del modelo de lenguaje causal}
+\subsection{Bloque HGRNBitMLP}
 
-La clase \texttt{HNetBitForCausalLM} integra todos los componentes anteriores. Su estructura jerárquica se define mediante dos arreglos configurables:
+El bloque \texttt{HGRNBitMLP} implementa la mezcla de canales mediante una red feed-forward con activación SwiGLU:
 
-\begin{itemize}
-\item \texttt{d\_model}: lista de dimensiones por etapa. Ejemplo: $[576, 768]$ para 150M (una etapa de chunking).
-\item \texttt{num\_blocks}: lista de listas que especifican el número de bloques HGRNBitBlock en cada subcomponente. Para una etapa no interna: $[\text{\#encoder}, 0, \text{\#decoder}]$; la etapa más interna recibe un solo entero.
-\end{itemize}
-
-El paso forward completo para una entrada $X$ de bytes es:
-
-\[
+\begin{equation}
 \begin{aligned}
-H_0 &= \text{Embedding}(X) && \in \mathbb{R}^{B \times L \times d_0}, \\
-H_0, \_ &= \text{HNetBit}(H_0, \text{stage}=0), \\
-\text{logits} &= \text{BitLinear}_{\text{LM}}(H_0) && \in \mathbb{R}^{B \times L \times 256}.
+y &= \text{BitLinear}_{\text{gate}}(x), \\
+y_{\text{gate}}, y_{\text{hidden}} &= \text{chunk}(y, 2), \\
+z &= \text{SwiGLU}(y_{\text{gate}}, y_{\text{hidden}}), \\
+o &= \text{BitLinear}_{\text{down}}(z).
 \end{aligned}
-\]
+\end{equation}
 
-Durante la generación autorregresiva, se mantiene una caché recursiva \texttt{HNetBitCache} que almacena los estados recurrentes de cada bloque HGRN y los valores EMA del dechunking, permitiendo un paso de inferencia en $O(\text{profundidad})$ sin recomputación.
+La dimensión intermedia se calcula como $\frac{2}{3} \cdot d_{\text{hidden}} \cdot \text{hidden\_ratio}$, redondeada al múltiplo de 256 más cercano para eficiencia en memoria.
+
+\subsection{Bloque HGRNBitBlock}
+
+Cada bloque \texttt{HGRNBitBlock} combina atención recurrente y MLP en una estructura residual de pre-normalización (\textit{pre-norm residual}):
+
+\begin{equation}
+\begin{aligned}
+x_1 &= x_0 + \text{HGRNBitAttention}(\text{RMSNorm}(x_0)), \\
+x_2 &= x_1 + \text{HGRNBitMLP}(\text{RMSNorm}(x_1)).
+\end{aligned}
+\end{equation}
+
+La normalización de la segunda subcapa utiliza una versión fusionada de RMSNorm con suma residual (\texttt{prenorm=True}), que combina la adición residual y la normalización en una sola operación para mejorar la eficiencia.
+
+\section{Arquitectura jerárquica recursiva}
+
+La jerarquía del modelo se construye mediante composición recursiva del módulo \texttt{HNetBit}: cada etapa no interna contiene otra instancia de \texttt{HNetBit} como su red principal.
+
+\subsection{Principio de recursividad}
+
+Cada etapa $s$ del modelo recibe una secuencia de entrada y la transforma a través de tres fases: codificación, procesamiento interno y decodificación. La etapa más interna implementa solo la fase de procesamiento interno (una pila de bloques HGRNBitBlock), mientras que las etapas externas añaden los módulos de chunking.
+
+Formalmente, sea $\mathcal{H}_s$ la etapa $s$ con dimensión $d_s$. Para una secuencia $H \in \mathbb{R}^{B \times L_s \times d_{s-1}}$ (donde $d_{-1} = d_0$):
+
+\begin{equation}
+\mathcal{H}_s(H) =
+\begin{cases}
+\text{HGRNBitStack}_s^{\text{inner}}(H) & \text{si } s = S-1, \\
+\text{Decoder}_s(\text{Dechunk}(\mathcal{H}_{s+1}(\text{Chunk}(\text{Encoder}_s(H))))) & \text{en otro caso}.
+\end{cases}
+\end{equation}
+
+\subsection{Etapa no interna}
+
+Para una etapa $s$ no interna con entrada $H \in \mathbb{R}^{B \times L \times d}$, el flujo de procesamiento completo es:
+
+\begin{enumerate}
+\item \textbf{Acolchonamiento de dimensión}: si $d_s > d_{s-1}$, se concatenan ceros aprendibles para igualar la dimensión.
+\item \textbf{Codificador}: $H_{\text{enc}} = \text{HGRNBitStack}_{\text{enc}}(H)$ — procesa la secuencia a la resolución actual.
+\item \textbf{Proyección residual}: $R = \text{Linear}_{\text{res}}(H_{\text{enc}})$ — proyección lineal en FP32 inicializada a cero, siguiendo la práctica de H-Net para estabilizar las conexiones residuales en jerarquías profundas.
+\item \textbf{Enrutamiento}: $(p, m) = \text{RoutingModuleBit}(H_{\text{enc}})$ — predice límites de fragmentos.
+\item \textbf{Chunking}: $H_{\text{chunk}} = \text{ChunkLayer}(H_{\text{enc}}, m)$ — selecciona tokens límite.
+\item \textbf{Procesamiento interno}: $H_{\text{inner}} = \mathcal{H}_{s+1}(H_{\text{chunk}})$ — procesa recursivamente en la siguiente etapa.
+\item \textbf{Dechunking}: $H_{\text{dechunk}} = \text{DeChunkLayer}(H_{\text{inner}}, m, p)$ — reconstruye la secuencia original mediante EMA.
+\item \textbf{Conexión residual}: $H_{\text{res}} = H_{\text{dechunk}} \cdot \text{STE}(p) + R$ — combina la salida reconstruida con la proyección residual, donde $\text{STE}(p)$ permite que el gradiente fluya a través de la selección discreta.
+\item \textbf{Decodificador}: $H_{\text{out}} = \text{HGRNBitStack}_{\text{dec}}(H_{\text{res}})$ — post-procesa la secuencia reconstruida.
+\item \textbf{Recorte dimensional}: se trunca la salida a la dimensión $d_{s-1}$ de la etapa padre.
+\end{enumerate}
+
+La proyección residual $R$ se inicializa a cero y se mantiene en precisión completa (FP32). Esto significa que al inicio del entrenamiento la conexión residual es inactiva, y el modelo aprende gradualmente a utilizarla según sea necesario. La función STE en el factor $p$ permite que el gradiente fluya a través de la operación de selección discreta:
+
+\begin{equation}
+\frac{\partial}{\partial p}\bigl(H_{\text{dechunk}} \cdot p\bigr) = H_{\text{dechunk}}.
+\end{equation}
+
+\subsection{Etapa más interna}
+
+La etapa más interna recibe los fragmentos de la etapa anterior y los procesa mediante una pila plana de bloques \texttt{HGRNBitBlock}:
+
+\begin{equation}
+H_{\text{out}} = \text{HGRNBitStack}_{\text{inner}}(H_{\text{chunk}}).
+\end{equation}
+
+Opcionalmente, los bloques HGRN en esta etapa pueden intercalarse con bloques de atención con ventana deslizante (\textit{sliding-window attention}), como se describe en la Sección~\ref{sec:hybrid_attn}.
+
+\subsection{Pila HGRNBitStack}
+
+\texttt{HGRNBitStack} es una secuencia de $N$ bloques \texttt{HGRNBitBlock} seguida de una normalización RMSNorm final:
+
+\begin{equation}
+H_{\text{stack}} = \text{RMSNorm}\bigl(\text{HGRNBitBlock}_N(\cdots \text{HGRNBitBlock}_1(H) \cdots)\bigr).
+\end{equation}
+
+Cada bloque sigue la arquitectura pre-norm residual descrita anteriormente. La pila constituye el componente computacional fundamental que se repite en codificadores, decodificadores y la etapa interna.
+
+\section{Variante con atención deslizante: Hybrid-Attn}
+\label{sec:hybrid_attn}
+
+Para estudiar el efecto de reintroducir atención en la arquitectura, se define una variante denominada \texttt{hybrid\_attn} que reemplaza selectivamente bloques HGRN por atención multi-cabeza con ventana deslizante en la etapa más interna. Esta variante permite evaluar el compromiso entre la eficiencia lineal de la recurrencia y la capacidad expresiva de la atención.
+
+\subsection{Motivación}
+
+Aunque la recurrencia HGRN ofrece complejidad lineal, la autoatención tiene la ventaja teórica de permitir un acceso directo a cualquier posición del contexto, sin compresión a través de un estado oculto. Al introducir atención solo en la etapa más interna (que opera sobre la secuencia más corta después del chunking jerárquico), se minimiza el impacto cuadrático: si la etapa externa comprime la secuencia por un factor $N$, la etapa interna opera sobre $L/N$ tokens, reduciendo la complejidad de la atención a $O((L/N)^2)$.
+
+\subsection{Atención causal con ventana deslizante}
+
+La capa de atención \texttt{CausalMHABit} implementa atención multi-cabeza con ventana deslizante \parencite{Beltagy2020} y embeddings rotatorios RoPE (\textit{Rotary Position Embeddings}) \parencite{Su2024}:
+
+\begin{equation}
+\begin{aligned}
+Q, K, V &= \text{Linear}_q(x), \text{Linear}_k(x), \text{Linear}_v(x) \in \mathbb{R}^{B \times L \times d}, \\
+Q, K &= \text{RoPE}(Q, K, \text{offset}), \\
+\text{mask}_{i,j} &= \begin{cases}
+0 & \text{si } i - w < j \le i, \\
+-\infty & \text{en otro caso},
+\end{cases} \\
+A &= \text{Softmax}\left(\frac{QK^{\mathsf{T}}}{\sqrt{d_{\text{cabeza}}}} + \text{mask}\right), \\
+O &= \text{AV},
+\end{aligned}
+\end{equation}
+
+donde $w$ es el tamaño de la ventana deslizante (64 posiciones en la configuración utilizada). La atención con ventana restringe cada token a atender solo a los $w$ tokens anteriores, limitando la complejidad a $O(L \cdot w)$ en lugar de $O(L^2)$.
+
+A diferencia del resto del modelo, las proyecciones $Q$, $K$, $V$ y $O$ utilizan precisión completa (\texttt{nn.Linear}) en lugar de cuantización ternaria, ya que los puntajes de atención requieren mayor precisión numérica para un cómputo estable \parencite{Hwang2025}.
+
+\subsection{Embeddings rotatorios (RoPE)}
+
+RoPE codifica la posición relativa de los tokens mediante una rotación en el espacio de representación:
+
+\begin{equation}
+\text{RoPE}(x, m) = x \odot \cos(m\theta) + \text{rotate\_half}(x) \odot \sin(m\theta),
+\end{equation}
+
+donde $m$ es la posición, $\theta_i = 10000^{-2i/d}$ es la frecuencia base para la dimensión $i$, y $\text{rotate\_half}$ intercambia y niega las mitades del vector. La caché de cosenos y senos se precalcula para el máximo contexto y se extiende dinámicamente si es necesario.
+
+\subsection{Patrón de intercalado}
+
+Los bloques de atención se intercalan con bloques HGRN siguiendo un patrón configurable. La variante implementada en este trabajo utiliza el patrón \texttt{"xaxa"}, que alterna HGRN, atención, HGRN, atención en la etapa más interna. La configuración se especifica mediante el parámetro \texttt{attention\_layers\_pattern}, donde \texttt{x} denota un bloque HGRN y \texttt{a} denota un bloque de atención deslizante:
+
+\begin{equation}
+\text{Etapa interna} = [\text{HGRN}, \text{Attn}, \text{HGRN}, \text{Attn}].
+\end{equation}
+
+Esta variante podría introducir aproximadamente un 8--10\% menos de parámetros que la versión puramente recurrente, debido a que las capas de atención utilizan precisión completa sin el factor de escala ternario, y no comparten el estado recurrente entre pasos.
+
+\section{Caché de inferencia}
+\label{sec:cache}
+
+Durante la generación autorregresiva, el modelo mantiene una estructura de caché recursiva que almacena los estados recurrentes de todos los bloques HGRN y los estados auxiliares del chunking, permitiendo un paso de inferencia en $O(\text{profundidad})$ sin recomputación. \textbf{Esta caché es exclusiva de la inferencia autorregresiva}: durante el entrenamiento, el modelo procesa la secuencia completa de una sola vez mediante los kernels paralelos descritos en la Sección~\ref{sec:hgrn_kernels}, sin necesidad de almacenar estados intermedios entre pasos.
+
+\subsection{Estructura de la caché}
+
+La caché sigue la misma estructura jerárquica que el modelo:
+
+\begin{verbatim}
+HNetBitCache (stage 0):
++-- encoder_cache: HGRNBlockCache
+|   +-- layer 0: (conv_state, h_state)
+|   +-- layer 1: (conv_state, h_state)
+|   +-- ...
++-- routing_state: RoutingModuleState
+|   +-- has_seen_tokens: (B,)
+|   +-- last_hidden_state: (B, D)
++-- main_network_cache: HNetBitCache (stage 1)
+|   +-- encoder_cache: ...
+|   +-- decoder_cache: ...
+|   +-- main_network_cache: HGRNBlockCache (stage 2, innermost)
++-- dechunk_state: DeChunkState
+|   +-- last_value: (B, D)
++-- decoder_cache: HGRNBlockCache
+\end{verbatim}
+
+A diferencia del \textit{KV cache} del Transformer, que almacena pares $(K, V)$ para cada capa y requiere $O(L \cdot d)$ memoria por capa, la caché HGRN almacena un estado de tamaño fijo $O(d)$ por capa, independientemente de la longitud de secuencia procesada. Esto permite una huella de memoria constante durante la generación.
+
+\subsection{Paso de generación (\textit{step mode})}
+
+Durante la generación paso a paso, el modelo recibe un solo token a la vez. El flujo es:
+
+\begin{enumerate}
+\item El codificador procesa el token y actualiza su caché recurrente.
+\item El módulo de enrutamiento compara el token actual con el anterior almacenado en \texttt{routing\_state} para decidir si es un límite.
+\item Si el token \textbf{no es límite}, la etapa interna se omite completamente y el decodificador procesa la salida del EMA, que simplemente mantiene el valor anterior del fragmento.
+\item Si el token \textbf{sí es límite}, se selecciona para procesamiento por la etapa interna. La caché de la etapa interna se particiona (\textit{slice}) para incluir solo los elementos del lote que son límites. Después del procesamiento, los resultados se fusionan (\textit{merge}) de vuelta a la caché principal.
+\end{enumerate}
+
+Esta omisión condicional de la etapa interna en los tokens no-límite reduce significativamente el costo de generación, ya que la mayoría de los tokens (típicamente $>80\%$) no constituyen límites y solo requieren procesamiento superficial.
+
+\subsection{Reordenamiento para búsqueda de haz}
+
+La caché implementa el método \texttt{reorder\_cache(beam\_idx)} que reordena recursivamente todos los estados dependientes del lote cuando se utiliza búsqueda de haz (\textit{beam search}). Cada \texttt{HGRNBlockCache} reordena sus estados de capa, y \texttt{HNetBitCache} reordena recursivamente sus subcachés.
+
+\section{Pipeline completo: de bytes a logits}
+
+La clase \texttt{HNetBitForCausalLM} integra todos los componentes descritos en un modelo de lenguaje causal completo.
+
+\subsection{Codificación byte-level}
+
+La entrada al modelo consiste en identificadores de bytes (valores enteros en $\{0, \ldots, 255\}$). El tokenizador de bytes (\texttt{ByteTokenizer}) añade un token BOS (\textit{Beginning of Sequence}) con valor 254 al inicio de cada secuencia y un token EOS (\textit{End of Sequence}) con valor 255 al final. La tabla de \textit{embeddings} es una capa \texttt{nn.Embedding(256, d\_0)} que mapea cada byte a un vector denso de dimensión $d_0$, donde $d_0$ es la dimensión del modelo en la etapa más externa.
+
+\subsection{Forward completo}
+
+El paso forward completo para una secuencia de entrada $X \in \mathbb{Z}^{B \times L}$ (identificadores de bytes) es:
+
+\begin{equation}
+\begin{aligned}
+H_0 &= \text{Embedding}(X) &&\in \mathbb{R}^{B \times L \times d_0}, \\
+H_{\text{out}}, \mathcal{R} &= \text{HNetBit}(H_0, \text{stage}=0) &&\in \mathbb{R}^{B \times L \times d_0}, \\
+\text{logits} &= \text{BitLinear}_{\text{LM}}(H_{\text{out}}) &&\in \mathbb{R}^{B \times L \times 256}.
+\end{aligned}
+\end{equation}
+
+donde $\mathcal{R}$ es la lista de salidas del módulo de enrutamiento de todas las etapas, utilizada para el cómputo de la pérdida de balanceo de carga.
+
+\subsection{Cabecera de lenguaje (\textit{LM head})}
+
+La cabecera de lenguaje es una capa \texttt{BitLinear} que proyecta los estados ocultos de la etapa más externa al espacio de vocabulario de 256 bytes. Al igual que todas las demás proyecciones, utiliza cuantización ternaria con STE. No se comparten los pesos con la tabla de \textit{embeddings} (\texttt{tie\_word\_embeddings=False}), ya que la cuantización ternaria de la cabecera y la precisión completa de los \textit{embeddings} tienen diferentes propiedades numéricas.
+
+\subsection{Cálculo de pérdida}
+
+La pérdida de entrenamiento se calcula como entropía cruzada con desplazamiento para predicción del siguiente token:
+
+\begin{equation}
+\mathcal{L}_{\text{CE}} = -\frac{1}{L-1} \sum_{t=1}^{L-1} \log \frac{e^{\text{logits}_{t-1, x_t}}}{\sum_{v=1}^{256} e^{\text{logits}_{t-1, v}}},
+\end{equation}
+
+donde $x_t$ es el byte objetivo en la posición $t$. Solo se computa pérdida en las posiciones válidas (no relleno). La pérdida total es $\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda_{\text{LB}} \mathcal{L}_{\text{LB}}$.
+
+\subsection{Componentes por régimen de operación}
+\label{sec:resumen_regimen}
+
+La Tabla~\ref{tab:regimen_componentes} consolida la pertenencia de cada componente arquitectónico a los regímenes de entrenamiento, inferencia autorregresiva, o ambos. Los componentes que están presentes en ambos ejecutan el mismo paso forward en los dos regímenes, aunque ciertos sub-mecanismos internos (como el STE) solo tengan efecto en uno de ellos.
+
+\begingroup
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{longtable}{p{0.55\linewidth} p{0.19\linewidth} p{0.19\linewidth}}
+\caption{Componentes arquitectónicos por régimen de operación}
+\label{tab:regimen_componentes} \\
+
+\toprule
+\textbf{Componente} & \textbf{Entrenamiento} & \textbf{Inferencia} \\
+\midrule
+\endfirsthead
+
+\multicolumn{3}{c}{\textit{--- Continuación de Tabla~\ref{tab:regimen_componentes} ---}} \\[4pt]
+\toprule
+\textbf{Componente} & \textbf{Entrenamiento} & \textbf{Inferencia} \\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{3}{r}{\footnotesize\textit{Continúa en la página siguiente}} \\
+\endfoot
+
+\bottomrule
+\endlastfoot
+
+ByteTokenizer + Embedding            & Sí & Sí \\
+HNetBit (jerarquía recursiva)       & Sí & Sí \\
+HGRNBitStack (encoder/decoder/inner)& Sí & Sí \\
+HGRNBitBlock (atención + MLP)       & Sí & Sí \\
+HGRNBitAttention (proyecciones i,f,g,o, recurrencia, SwiGLU) & Sí & Sí \\
+HGRNBitMLP (expansión + SwiGLU + contracción) & Sí & Sí \\
+BitLinear / FusedBitLinear (RMSNorm + cuantización + lineal) & Sí & Sí \\
+RMSNorm, FusedRMSNormSwishGate      & Sí & Sí \\
+SwiGLU                              & Sí & Sí \\
+Conv1D causal (corta)               & Sí & Sí \\
+RoutingModuleBit (cálculo de p, m)  & Sí (lote) & Sí (paso a paso) \\
+ChunkLayer (argsort)                & Sí & Sí \\
+DeChunkLayer (EMA + plug-back)      & Sí & Sí \\
+CausalMHABit + RoPE (solo hybrid\_attn) & Sí & Sí \\
+BitLinear\_LM (cabecera de lenguaje)& Sí & Sí \\
+STE (mecanismo detach en BitLinear) & Sí (backprop) & No (torch.no\_grad) \\
+$\mathcal{L}_{\text{CE}}$ (entropía cruzada) & Sí & No \\
+$\mathcal{L}_{\text{LB}}$ (balanceo de carga) & Sí & No \\
+Kernel \texttt{chunk\_hgrn} (log-space, $C{=}128$) & Sí (secuencias largas) & No \\
+\texttt{weight\_quant} (re-cuantización por paso) & Sí (cada forward) & No (pesos congelados en despliegue) \\
+Kernel \texttt{fused\_recurrent\_hgrn} (probability-space) & No$^{a}$ & Sí \\
+\texttt{HNetBitCache} (y subcachés)  & No & Sí \\
+\texttt{RoutingModuleState}          & No & Sí \\
+\texttt{DeChunkState}                & No & Sí \\
+Omisión condicional de etapa interna & No & Sí \\
+\texttt{reorder\_cache} (beam search) & No & Sí \\
+\bottomrule
+
+\footnotesize
+$^{a}$ El kernel \texttt{fused\_recurrent\_hgrn} también se usa en entrenamiento para secuencias muy cortas donde la sobrecarga de fragmentación del kernel \texttt{chunk\_hgrn} no se justifica. Sin embargo, su uso principal y para lo que está optimizado es la inferencia autorregresiva.
+\end{longtable}
+\endgroup
+
+Como resume la tabla, el esqueleto computacional del modelo (HNetBit, HGRNBitStack, BitLinear, módulos de chunking) es compartido. Las diferencias entre regímenes se concentran en tres aspectos: (1) la presencia o ausencia de retropropagación (STE, pérdidas), (2) el kernel de recurrencia utilizado (paralelo en log-space para entrenamiento vs. secuencial en probability-space para inferencia), y (3) la infraestructura de caché para mantener el estado recurrente entre pasos autorregresivos.
+

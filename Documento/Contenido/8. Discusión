@@ -1,0 +1,58 @@
+\chapter{Discusión}
+\label{cap:discusion}
+
+Este capítulo interpreta los resultados del Capítulo~\ref{cap:resultados} a la luz de los objetivos del trabajo y de la literatura, discute los hallazgos inesperados, y examina las limitaciones metodológicas que condicionan la validez de las conclusiones.
+
+\section{Viabilidad de eliminar MatMul y tokenización}
+
+Los resultados responden de forma matizada, pero optimista, a la pregunta de investigación. Por un lado, confirman que la eliminación de MatMul mediante pesos ternarios no sacrifica calidad: el MatMul-Free plano superó al Transformer en BPB en ambas escalas (0.6\,\% a 150M y 1.2\,\% a 350M), con 23\,\% menos parámetros no asociados a \textit{embeddings} a 350M. Este resultado es coherente con la literatura: \textcite{Zhu2024} reportan paridad con Transformer++ a partir de 370M parámetros, y \textcite{Ma2024} muestran que BitNet b1.58 iguala a LLaMA a partir de 3B. Nuestro trabajo extiende esta evidencia a un corpus en español y a un presupuesto de datos mucho menor (25B bytes frente a cientos de miles de millones de tokens).
+
+Por otro lado, la combinación de chunking dinámico con pesos ternarios (HNetBit) quedó 9.3\,\% por debajo del Transformer a 150M y 3.7\,\% a 350M. Este resultado evidencia que la brecha se reduce con la escala y que la curva de aprendizaje del híbrido de 350M es la de mayor pendiente en la fase final del entrenamiento: si la tendencia se mantiene, el cruce ocurriría a escalas ligeramente mayores, consistente con \textcite{Hwang2025}, donde H-Net (con encoders Mamba en precisión completa y un presupuesto de decenas de miles de millones de bytes) cruza por debajo del Transformer tokenizado alrededor de los 30B bytes en modelos de 760M--1.3B parámetros.
+
+La jerarquía con chunking aprendido introduce una pérdida de calidad inicial esperable que se amortiza con la escala, pero que en el régimen de 150M--350M con 25B bytes esa amortización aún no se completa. La eliminación de MatMul, en cambio, es gratuita en términos de calidad en este régimen: no se observó penalización alguna atribuible a los pesos ternarios.
+
+\section{Hallazgos inesperados}
+
+\subsection{La curva no monótona del híbrido de 150M}
+
+El empeoramiento de la validación del híbrido de 150M entre los 6.25B y los 18.75B bytes (de 1.632 a 1.778) seguido de una recuperación abrupta hasta 1.617 en el decaimiento final no se observó en ningún otro modelo. La posible interpretación es que el módulo de enrutamiento, con una sola etapa de chunking y una tasa de aprendizaje alta ($4\times10^{-3}$), explora continuamente configuraciones de segmentación durante la fase estable del programador WSD; esas exploraciones degradan temporalmente la validación, y solo el decaimiento de la tasa permite asentarse en una segmentación buena. La desaparición del fenómeno a 350M (dos etapas) sugiere que la jerarquía más profunda estabiliza el enrutamiento. Este resultado tiene una implicación práctica: los modelos con chunking dinámico en regímenes de alta tasa de aprendizaje pueden beneficiarse de fases de decaimiento más largas, y el BPB en los hitos intermedios no predice fielmente el resultado final.
+
+\subsection{La compresión aprendida es estable y lingüísticamente plausible}
+
+Un hallazgo positivo fue la convergencia rápida y estable de la fracción de límites de la etapa externa ($\sim$0.31, es decir, fragmentos de $\sim$3.2 bytes) desde el inicio del entrenamiento, y la emergencia de una segunda etapa que agrupa en unidades de $\sim$15 bytes, cercanas a la longitud media de palabra en español. La segmentación aprendida end-to-end reproduce niveles de abstracción análogos a los de un tokenizador BPE, sin ningún preprocesamiento: este es el resultado más directo a favor del paradigma sin tokenización, y coincide cualitativamente con lo reportado por \textcite{Hwang2025} y \textcite{Slagle2024} sobre la alineación de los límites aprendidos con fronteras lingüísticas.
+
+\subsection{El cuello de botella de los modelos ternarios es la velocidad, no la memoria}
+
+En decodificación el Transformer alcanzó 922 tok/s en lote 8 frente a 372 del híbrido y 222 del MatMul-Free a 150M. La explicación es que en la A100 los pesos ternarios se desempaquetan a FP32 para el cómputo (Sección~\ref{sec:exportacion} del Capítulo~\ref{cap:implementacion}), de modo que la reducción de bits se traduce en menor memoria y menor ancho de banda, no en menos FLOPs efectivos; y la recurrencia secuencial del MatMul-Free no paraleliza bien en GPU. La ganancia real de estas arquitecturas en el hardware disponible es la huella de memoria (1.9--2.9$\times$ menor) y el tamaño de despliegue (7--7.6$\times$ menor), no la latencia. El aprovechamiento pleno de la aritmética ternaria requeriría kernels especializados para la representación empaquetada o hardware dedicado, como lo plantea \textcite{Ma2024}.
+
+\section{Validez interna}
+
+\subsection{Igualdad del presupuesto de bytes}
+
+El diseño metodológico garantizó que las seis ejecuciones consumieran exactamente los mismos 25\,000 millones de bytes subyacentes, mediante la fórmula de bytes por paso con el promedio medido de 3.16 bytes por token del corpus. Una consecuencia de usar el promedio medido (en lugar de la estimación inicial de 4.5) es que los contextos por muestra quedaron prácticamente simétricos: $\sim$4043 bytes efectivos para el Transformer frente a 4096 bytes para los modelos byte-level. Esto elimina el riesgo de que el Transformer disfrutara de una ventaja de contexto más largo, y fortalece la comparación: las diferencias de BPB no pueden atribuirse a asimetría de contexto.
+
+\subsection{Desigualdad de parámetros}
+
+La comparación no está emparejada en parámetros: a 150M el híbrido tiene 22\,\% más parámetros no asociados a \textit{embeddings} que el Transformer, y a 350M el MatMul-Free tiene 23\,\% menos. Las configuraciones se eligieron para cubrir el presupuesto de parámetros objetivo de cada categoría, no para igualar los conteos. Esto no invalida los hallazgos cualitativos, pero debe tenerse en cuenta al leer las magnitudes de las diferencias.
+
+\subsection{Asimetría en gradient checkpointing}
+
+El Transformer y el MatMul-Free entrenaron con recomputación de activaciones; el híbrido no, porque su paso forward no está instrumentado para ello. Esta diferencia no afecta la calidad de los modelos (el checkpointing no cambia la función aprendida), pero sí el consumo de memoria de entrenamiento: el híbrido necesitó 15.5 GB a 150M y 27.9 GB a 350M, frente a 6.7/3.4 y 12.1/7.5 GB de las líneas base. Documentarlo es importante para la comparabilidad de las métricas de memoria de entrenamiento, que no deben leerse como costo intrínseco de la arquitectura sino como costo de la implementación actual.
+
+\subsection{Comparabilidad de la métrica BPB}
+
+El BPB del Transformer se convirtió desde nats por token usando el promedio de bytes por token del corpus (3.16). Este valor se midió sobre el corpus completo; si la distribución de longitudes de token difiriera entre entrenamiento y validación, la conversión introduciría un sesgo pequeño. Dado que la división es contigua y el corpus es homogéneo, el riesgo bajo, pero es una fuente de incertidumbre adicional para el Transformer que no existe en los modelos byte-level.
+
+\section{Validez externa y limitaciones}
+
+\subsection{Una sola ejecución por configuración}
+
+Todas las ejecuciones usan la semilla 42, sin réplicas. Las diferencias de BPB entre modelos a 150M (0.6\,\% entre MatMul-Free y Transformer) podrían ser comparables a la varianza entre ejecuciones con semillas distintas, por lo que la afirmación de superioridad del MatMul-Free a 150M debe tomarse con cautela; a 350M las diferencias (1.2\,\% y 3.7\,\%) son más difíciles de explicar por varianza, pero no contamos con intervalos de confianza que lo demuestren.
+
+\subsection{Comparación no emparejada en FLOPs}
+
+La igualación se hizo por bytes de entrenamiento, no por FLOPs, siguiendo el protocolo de \textcite{Hwang2025}. Dado que las arquitecturas tienen costos computacionales por byte muy distintos (el Transformer entrenó en 40.3 h frente a 120.3 h del MatMul-Free a 150M), una comparación emparejada en FLOPs podría mover los resultados en direcciones no anticipadas. En particular, el MatMul-Free dispuso de más tiempo de cómputo por byte, lo que favorece su BPB.
+
+\section{Implicaciones}
+
+Los resultados respaldan una conclusión práctica clara para el despliegue: si el objetivo es un modelo de lenguaje compacto para un entorno con recursos limitados (memoria y almacenamiento), las arquitecturas ternarias ofrecen reducciones de 7--7.6$\times$ en tamaño de despliegue y de 1.9--2.9$\times$ en memoria de inferencia con una penalización de calidad nula (MatMul-Free) o moderada y decreciente (HNetBit). Si el objetivo es máximo rendimiento por token en una GPU moderna, el Transformer sigue siendo la opción dominante.

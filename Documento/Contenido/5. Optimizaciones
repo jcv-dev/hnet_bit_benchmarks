@@ -1,84 +1,320 @@
-\section{Implementación y optimizaciones}
+\chapter{Implementación y optimizaciones}
+\label{cap:implementacion}
 
-Esta sección describe los aspectos prácticos de la implementación del modelo HNetBit, las decisiones de ingeniería de software y las optimizaciones de bajo nivel que permiten su entrenamiento eficiente en una sola GPU A100.
+Este capítulo describe los aspectos prácticos de la implementación del modelo HNetBit y la infraestructura de entrenamiento para los benchmarks, incluyendo las decisiones de ingeniería de software, las optimizaciones de bajo nivel mediante kernels Triton y las técnicas de gestión de memoria que permiten el entrenamiento eficiente en una sola GPU A100 de 80 GB.
 
-\subsection{Organización del código}
+\section{Organización del código y arquitectura de software}
 
-El proyecto se estructura en los siguientes módulos principales:
-
-\begin{itemize}
-\item \texttt{hnet\_bit/models/hnet\_bit.py}: define las clases \texttt{HNetBitConfig}, \texttt{HGRNBitStack}, \texttt{HNetBit} (recursivo) y \texttt{HNetBitForCausalLM}.
-\item \texttt{hnet\_bit/layers/hgrn\_bit.py}: contiene los bloques \texttt{HGRNBitAttention}, \texttt{HGRNBitMLP} y \texttt{HGRNBitBlock}.
-\item \texttt{hnet\_bit/ops/bitnet.py}: implementa \texttt{BitLinear}, \texttt{weight\_quant} y \texttt{activation\_quant} con soporte STE.
-\item \texttt{hnet\_bit/ops/dynamic\_chunking.py}: módulos \texttt{RoutingModuleBit}, \texttt{ChunkLayer}, \texttt{DeChunkLayer}.
-\item \texttt{hnet\_bit/ops/hgrn/}: kernels Triton y fallbacks CPU para la recurrencia (\texttt{recurrent\_fuse.py}, \texttt{chunk.py}).
-\end{itemize}
-
-El entrenamiento de los benchmarks (comparación con transformer y MatMul-Free plano) se realiza mediante el script unificado \texttt{train\_spanish.py}, que carga la fábrica de modelos (\texttt{model\_factory.py}) y aplica la misma configuración de optimizador y horario de aprendizaje a todas las arquitecturas.
-
-\subsection{Kernels Triton y gestión de memoria}
-
-Para acelerar las operaciones más costosas se implementaron kernels Triton personalizados:
+El proyecto se organiza en una jerarquía de módulos con responsabilidades claramente separadas:
 
 \begin{itemize}
-\item \textbf{FusedBitLinear}: Fusiona la normalización RMSNorm, la cuantización de activaciones y la multiplicación ternaria en un solo kernel, reduciendo los viajes de ida y vuelta entre HBM y SRAM. La implementación sigue el esquema de bloque por fila/columna y utiliza acumulación de enteros para la operación ternaria.
-\item \textbf{Fused recurrent HGRN}: kernel que ejecuta la recurrencia secuencial pero paraleliza a través de la dimensión de cabezas y el tamaño de lote. Utiliza registros para mantener los estados en SRAM. Se autotunea el tamaño de bloque según la longitud de secuencia.
-\item \textbf{Chunk HGRN}: implementa el algoritmo de escaneo paralelo por fragmentos. Para cada fragmento de tamaño $C=64$, se calculan las matrices de transición local y luego se combinan mediante una reducción paralela. La complejidad es $O(L)$ pero con una constante significativamente menor que el kernel recurrente puro.
+\item \texttt{hnet\_bit/models/}: clases fundamentales del modelo: \texttt{HNetBitConfig}, \texttt{HNetBit} (módulo jerárquico), \texttt{HGRNBitStack} (pila de bloques) y \texttt{HNetBitForCausalLM} (modelo completo con HuggingFace).
+\item \texttt{hnet\_bit/layers/}: bloques HGRNBitAttention, HGRNBitMLP, HGRNBitBlock y CausalMHABit.
+\item \texttt{hnet\_bit/ops/}: operaciones de bajo nivel: \texttt{BitLinear}, \texttt{FusedBitLinear}, \texttt{RMSNorm}, \texttt{RoutingModuleBit}, \texttt{ChunkLayer}, \texttt{DeChunkLayer}, activaciones y kernels Triton para HGRN.
+\item \texttt{hnet\_bit/training/}: infraestructura: \texttt{Trainer}, \texttt{TrainingLogger}, \texttt{TrainingConfig}, optimizador y scheduler.
+\item \texttt{hnet\_bit/utils/}: utilidades: \texttt{ByteTokenizer} (UTF-8), \texttt{HNetBitCache} (caché jerárquica), helpers.
 \end{itemize}
 
-Todos los kernels tienen fallbacks en PyTorch puro (bucles \texttt{for}) cuando se ejecutan en CPU o cuando Triton no está disponible (por ejemplo, en contenedores Docker sin privilegios). El fallback se activa automáticamente mediante la variable de entorno \texttt{HNETBIT\_DISABLE\_TRITON}.
 
-\subsection{Manejo de la caché de generación}
-
-Durante la inferencia autorregresiva, el modelo HNetBit mantiene una estructura de caché recursiva:
-
-\begin{verbatim}
-@dataclass
-class HNetBitCache:
-    encoder_cache: List[torch.Tensor]   # estados h para cada bloque encoder
-    routing_state: RoutingModuleState   # último token y contador
-    main_network_cache: HNetBitCache    # caché de la siguiente etapa (recursiva)
-    dechunk_state: DeChunkState         # último valor EMA
-    decoder_cache: List[torch.Tensor]   # estados h para cada bloque decoder
-\end{verbatim}
-
-Esta estructura permite que cada etapa gestione su propio estado sin interferencias. En el paso de generación, cuando el módulo de enrutamiento decide que el token actual no es un límite, la etapa interna se omite completamente y solo se actualiza el EMA, lo que acelera significativamente la decodificación.
-
-\subsection{Optimizaciones de memoria para entrenamiento}
-
-A pesar de que el modelo híbrido no soporta gradient checkpointing, se implementaron otras técnicas para reducir el consumo de VRAM:
+La orquestación de los experimentos de benchmark se realiza mediante dos módulos externos a \texttt{hnet\_bit/}:
 
 \begin{itemize}
-\item Uso de bf16 en todas las operaciones (los pesos ternarios se mantienen en FP32 durante el entrenamiento, pero las activaciones y gradientes en bf16).
-\item Compresión de la caché del optimizador AdamW: solo se almacenan los momentos de los parámetros que realmente se actualizan (en BitLinear, todos los parámetros se actualizan, pero las proyecciones residuales full-precision son muy pequeñas).
-\item Liberación manual de buffers intermedios en cada etapa: después de usar los tensores de chunk y dechunk, se llama explícitamente a \texttt{del} y \texttt{torch.cuda.empty\_cache()} en puntos estratégicos.
-\item Descomposición de lotes grandes: cuando la memoria escasea, se reduce \texttt{batch\_size} y se aumenta \texttt{gradient\_accumulation} proporcionalmente.
+\item \texttt{model\_factory.py}: función \texttt{build\_model(nombre, tamaño)} que construye cualquiera de las cuatro arquitecturas en los tres tamaños, retornando el modelo, modo byte-level y tamaño del vocabulario.
+\item \texttt{train\_spanish.py}: script unificado que carga la configuración, construye modelo y dataloaders, e implementa el bucle de entrenamiento con checkpointing, logging y evaluación.
+\item \texttt{export\_deployment.py}: convierte un checkpoint en archivo de despliegue compacto con pesos ternarios empaquetados.
+\item \texttt{profile\_inference.py}: mide latencia de prefill y throughput de decodificación.
 \end{itemize}
 
-Con estas optimizaciones, el modelo híbrido de 150M entrena en aproximadamente 15.5 GB de VRAM, y el de 350M en 32 GB, cabiendo ambos holgadamente en una A100 de 80 GB.
+\section{Infraestructura de entrenamiento}
 
-\subsection{Exportación para despliegue}
+El entrenamiento se realiza mediante la clase \texttt{SpanishTrainer} en \texttt{train\_spanish.py}, que implementa un bucle de entrenamiento personalizado con soporte para acumulación de gradientes, precisión mixta, pérdida de balanceo de carga y tracking de bytes procesados.
 
-Una vez entrenado, el modelo se puede exportar a un formato compacto mediante \texttt{export\_deployment.py}. El proceso realiza:
+\subsection{Bucle principal de entrenamiento}
+
+El bucle de entrenamiento sigue la siguiente secuencia por paso de optimizador:
 
 \begin{enumerate}
-\item Extracción de los tensores de peso de cada \texttt{BitLinear}.
-\item Cuantización determinista: $\tilde{W} = \text{round\_clamp}(W \cdot \alpha, -1, 1)$, almacenando solo los enteros $\{-1,0,1\}$.
-\item Empaquetado de bits: se codifican tres estados (2 bits por parámetro) en un arreglo de uint8, utilizando la correspondencia $-1 \rightarrow 00$, $0 \rightarrow 01$, $+1 \rightarrow 10$.
-\item Eliminación de todos los buffers del optimizador y del estado de normalización que no son necesarios para inferencia.
-\item Guardado como \texttt{model\_deploy.pt} mediante \texttt{torch.save} con compresión.
+\item \textbf{Micro-batch}: se itera sobre $N_{\text{accum}}$ micro-lotes, donde $N_{\text{accum}} = 8$ es el número de pasos de acumulación de gradientes. Para cada micro-lote:
+  \begin{enumerate}
+  \item Se transfieren los datos a GPU.
+  \item Con \texttt{autocast('cuda', dtype=bfloat16)}: forward del modelo, cálculo de $\mathcal{L}_{\text{CE}}$, y (para modelos híbridos) $\mathcal{L}_{\text{LB}}$.
+  \item $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{CE}} + \lambda_{\text{LB}} \cdot \mathcal{L}_{\text{LB}}$.
+  \item $\text{loss} = \mathcal{L}_{\text{total}} / N_{\text{accum}}$.
+  \item \texttt{scaler.scale(loss).backward()}.
+  \end{enumerate}
+\item \textbf{Optimización} (cada $N_{\text{accum}}$ micro-lotes):
+  \begin{enumerate}
+  \item \texttt{scaler.unscale\_(optimizer)}.
+  \item \texttt{clip\_grad\_norm\_(params, max\_norm=1.0)}.
+  \item \texttt{scaler.step(optimizer)} y \texttt{scaler.update()}.
+  \item \texttt{optimizer.zero\_grad(set\_to\_none=True)}.
+  \item \texttt{scheduler.step()}.
+  \item \texttt{global\_step += 1}.
+  \end{enumerate}
+\item \textbf{Tracking}: se incrementa \texttt{bytes\_seen} en \texttt{bytes\_per\_step} (131\,072 para modelos byte-level, $\approx$129\,400 para transformer).
+\item \textbf{Logging}: cada 10 pasos se registran loss, lr, grad\_norm, tok\_per\_sec y\\ peak\_mem\_mb.
+\item \textbf{Evaluación}: cada 1000 pasos se computa BPB en validación.
 \end{enumerate}
 
-Durante la inferencia con el modelo exportado, los pesos se desempaquetan dinámicamente a float32 (o bf16) y se cargan en las capas BitLinear, que ahora operan en modo \texttt{eval} sin STE. La compresión resultante es de $7-8\times$ frente a FP16, como se reportó en la Tabla LLENAR TABLA AQUI.
+\subsection{Precisión mixta}
 
-\subsection{Integración con Hugging Face y pipelines de datos}
+Se utiliza precisión mixta bf16 para todas las operaciones. Las activaciones y gradientes se almacenan en bf16, mientras que los pesos completos (antes de cuantización ternaria) se mantienen en FP32 para preservar la precisión de las actualizaciones del optimizador. El \texttt{GradScaler} se habilita únicamente cuando se utiliza fp16 como respaldo; con bf16, \texttt{scaler.scale()} es una operación identidad que no afecta el cómputo.
 
-El modelo \texttt{HNetBitForCausalLM} hereda de \texttt{PreTrainedModel} y \texttt{GenerationMixin}, lo que permite usar las utilidades estándar de Hugging Face como \texttt{model.generate()} y \texttt{pipeline}. Se implementan los métodos necesarios:
+\subsection{Pérdida de balanceo de carga}
+
+Para los modelos HNetBit (\texttt{hybrid} y \texttt{hybrid\_attn}), se añade una pérdida auxiliar de balanceo de carga (ver Sección~\ref{sec:lb_loss} del Capítulo~4) que penaliza las soluciones degeneradas del módulo de enrutamiento. En la implementación, para cada etapa con enrutamiento se extraen la máscara de límites $m$ y las probabilidades $p$ de la salida del \texttt{RoutingModuleBit}, y se computa $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{CE}} + 0.01 \cdot \sum_s \mathcal{L}_{\text{LB}}^{(s)}$, con factor de submuestreo esperado $N = 5.0$ (longitud promedio de palabra en español).
+
+\subsection{Tracking de compresión por etapa}
+
+Durante el entrenamiento de modelos híbridos, se registra la tasa de compresión de cada etapa de chunking:
+
+\begin{equation}
+\text{compression\_ratio}_s = \frac{\text{tokens de entrada}}{\text{tokens de salida}} = \frac{1}{\hat{m}_s},
+\end{equation}
+
+donde $\hat{m}_s$ es la fracción de límites predichos en la etapa $s$. La compresión global del modelo (producto de las compresiones de todas las etapas) se almacena en \texttt{training\_stats.json} como un indicador de la eficiencia de segmentación aprendida.
+
+\section{Sistema de checkpointing y resume}
+
+El sistema de checkpointing está diseñado para permitir la recuperación completa del estado de entrenamiento, incluyendo el modelo, el optimizador, el scheduler y los metadatos de progreso.
+
+\subsection{Contenido del checkpoint}
+
+Cada checkpoint contiene las siguientes claves:
+
+\begin{verbatim}
+{
+    "model_state_dict":       # Pesos del modelo
+    "optimizer_state_dict":   # Estado de AdamW
+    "scheduler_state_dict":   # Estado del scheduler WSD
+    "scaler_state_dict":      # Estado del GradScaler
+    "global_step":            # Paso global de optimización
+    "bytes_seen":             # Total de bytes procesados
+    "best_val_bpb":           # Mejor BPB de validación hasta el momento
+    "milestones_passed":      # Lista de hitos de bytes ya alcanzados
+    "config":                 # Configuración completa de entrenamiento
+}
+\end{verbatim}
+
+Cada archivo ocupa aproximadamente 2.2 GB para el modelo de 150M, dominado por los pesos del modelo y los momentos del optimizador AdamW (que almacena dos momentos por parámetro en FP32).
+
+\subsection{Jerarquía de checkpoints}
+
+Durante el entrenamiento se generan cuatro tipos de checkpoints:
 
 \begin{itemize}
-\item \texttt{\_prepare\_cache\_for\_generation}: crea una instancia de \texttt{HNetBitCache} en lugar de \texttt{DynamicCache}.
-\item \texttt{\_reorder\_cache}: reordena los estados de la caché cuando se usa beam search.
-\item \texttt{resize\_token\_embeddings}: permite ajustar el vocabulario (aunque para byte-level no es necesario).
+\item \textbf{Periódicos}: cada 5\,000 pasos de optimizador se guarda \texttt{checkpoint\_step\_\{N\}.pt}. Estos archivos se eliminan automáticamente al finalizar el entrenamiento para conservar espacio en disco.
+\item \textbf{Hitos por bytes}: al alcanzar cada hito (6.25B, 12.5B, 18.75B, 25B) se fuerza evaluación de validación y se guarda \texttt{checkpoint\_milestone\_\{N.N\}B.pt}. Esto permite reconstruir curvas de aprendizaje si el entrenamiento se interrumpe.
+\item \textbf{Mejor validación}: cuando el BPB de validación alcanza un nuevo mínimo, se sobrescribe \texttt{checkpoint\_best.pt}.
+\item \textbf{Final}: al completar el presupuesto de 25B bytes, se guarda \texttt{checkpoint\_final.pt}.
 \end{itemize}
 
-El pipeline de datos (\texttt{data\_spanish.py}) maneja dos modos: byte-level (concatenación directa de bytes, padded a 4096) y BPE (tokenización con GPT-2, padded a 1280). Se utiliza memoria mapeada (\texttt{np.memmap}) para almacenar los conjuntos de entrenamiento y validación en disco, evitando cargar todo el corpus en RAM. El tokenizador BPE corre en procesos paralelos con reciclaje periódico para controlar la memoria.
+\subsection{Mecanismo de resume}
+
+El resume desde un checkpoint restaura completamente el estado de entrenamiento:
+
+\begin{enumerate}
+\item Se restauran los estados del modelo, optimizador, scheduler y \texttt{scaler\_state\_dict} desde el checkpoint.
+\item Se restauran \texttt{global\_step}, \texttt{bytes\_seen} y \texttt{best\_val\_bpb}.
+\item Se reconstruye el conjunto de hitos pasados: si el checkpoint contiene \texttt{milestones\_passed} se usa directamente; en caso contrario se infiere comparando \texttt{bytes\_seen} con los umbrales.
+\item Se leen los archivos CSV existentes (\texttt{training\_steps\_log.csv} y \texttt{validation\_log.csv}) para reconstruir las listas internas de logging, de modo que las nuevas entradas se añadan sin duplicar las anteriores.
+\end{enumerate}
+
+
+\section{Sistema de logging}
+
+El sistema de logging registra el progreso del entrenamiento en tres formatos complementarios: CSV para análisis posterior, consola para monitoreo en vivo y JSON para métricas finales agregadas.
+
+\subsection{Training steps log}
+
+Cada 10 pasos de optimizador se añade una fila a \texttt{training\_steps\_log.csv} con las siguientes columnas:
+
+\begin{itemize}
+\item \texttt{step}: número de paso de optimizador.
+\item \texttt{bytes\_seen}: bytes totales de texto procesados hasta el momento.
+\item \texttt{loss}: pérdida de entropía cruzada del micro-lote actual.
+\item \texttt{lr}: tasa de aprendizaje efectiva.
+\item \texttt{grad\_norm}: norma L2 de los gradientes después de clipping.
+\item \texttt{tok\_per\_sec}: rendimiento en bytes por segundo (incluyendo el overhead de forward + backward).
+\item \texttt{peak\_mem\_mb}: máximo de memoria GPU asignada durante el paso.
+\item Para modelos híbridos: \texttt{stage\_0\_compression\_ratio}, \texttt{stage\_1\_compression\_ratio} y \texttt{overall\_compression\_ratio}.
+\end{itemize}
+
+\subsection{Validation log}
+
+Cada 1\,000 pasos, y en cada hito de bytes, se ejecuta una evaluación completa sobre 50 lotes de validación ($\sim$0.8 MB de texto) y se registra en \texttt{validation\_log.csv}:
+
+\begin{itemize}
+\item \texttt{step}: paso de optimizador.
+\item \texttt{bytes\_seen}: bytes procesados.
+\item \texttt{val\_loss}: pérdida media de entropía cruzada en el conjunto de validación.
+\item \texttt{val\_bpb}: bits por byte, calculado como $\text{val\_loss} / \ln 2$ para modelos byte-level.
+\end{itemize}
+
+La evaluación final al término del entrenamiento utiliza 200 lotes ($\sim$3.3 MB) para una medición más precisa.
+
+\subsection{Training stats JSON}
+
+Al finalizar el entrenamiento, se escribe \texttt{training\_stats.json} con un resumen de las métricas agregadas:
+
+\begin{verbatim}
+{
+    "training_time_seconds":   69300,
+    "training_time_hours":     19.25,
+    "total_steps":             190735,
+    "bytes_seen":              25000000000,
+    "param_count":             138000000,
+    "non_embedding_param_count": 138000000,
+    "disk_size_mb":            263.9,
+    "peak_training_memory_mb": 15500,
+    "peak_reserved_memory_mb": 16000,
+    "overall_compression_ratio": 0.31
+}
+\end{verbatim}
+
+\section{Kernels Triton y gestión de memoria GPU}
+
+Para maximizar la eficiencia en GPU, las operaciones más costosas se implementan mediante kernels Triton personalizados que minimizan los accesos a memoria HBM mediante fusiones de operaciones y gestión cuidadosa de SRAM. Los kernels \texttt{FusedBitLinear}, \texttt{fused\_recurrent\_hgrn}, \texttt{chunk\_hgrn}, \texttt{FusedRMSNormSwishGate} y \texttt{SwiGLU} se describen en detalle en las Secciones~\ref{sec:fused_bitlinear}, \ref{sec:hgrn_kernels}, \ref{sec:fused_norm_gate} y \ref{sec:swiglu} del Capítulo~4, respectivamente.
+
+\subsection{Detección de Triton y fallbacks}
+
+Todos los kernels detectan automáticamente la disponibilidad de Triton mediante una sonda de compilación en tiempo de ejecución. Si Triton no está disponible (por ejemplo, en CPU, en contenedores Docker sin privilegios, o cuando se establece la variable de entorno \texttt{HNETBIT\_DISABLE\_TRITON=1}), se utilizan implementaciones de respaldo en PyTorch puro:
+
+\begin{itemize}
+\item \texttt{FusedBitLinear} cae a \texttt{BitLinear.forward()} estándar con bucles de normalización y cuantización separados.
+\item \texttt{fused\_recurrent\_hgrn} cae a un bucle \texttt{for} en Python sobre la dimensión temporal.
+\item \texttt{chunk\_hgrn} cae a \texttt{\_naive\_chunk\_hgrn}, que implementa la misma recurrencia $\exp(g)$ mediante un bucle \texttt{for} sobre $t$.
+\end{itemize}
+
+Estos fallbacks son entre 3 y 10 veces más lentos que las versiones Triton, pero permiten la ejecución en entornos sin soporte de compilación JIT.
+
+\section{Optimizaciones de memoria para entrenamiento}
+
+El modelo híbrido presenta desafíos particulares de memoria debido a que su paso forward no está instrumentado para gradient checkpointing. A continuación se describen las técnicas implementadas para reducir el consumo de VRAM.
+
+\subsection{Ausencia de gradient checkpointing}
+\label{sec:gc_ausente}
+
+El gradient checkpointing (o recomputación de activaciones) es una técnica que intercambia cómputo por memoria: durante el forward, solo se almacenan las activaciones de ciertos puntos de control; durante el backward, las activaciones intermedias se recalculan a partir de estos puntos. Esta técnica funciona mediante la inserción de puntos de control en el grafo computacional de PyTorch.
+
+En el modelo híbrido, la función \texttt{enable\_gradient\_checkpointing()} establece la bandera \texttt{\_gradient\_checkpointing = True} en los módulos de \texttt{HNetBit}, pero la implementación del paso forward en \texttt{HNetBit.forward()} y \texttt{step()} nunca lee esta bandera. Por lo tanto, todas las activaciones intermedias de la jerarquía completa (codificadores, decodificadores, módulos de chunking, etapas recursivas) se retienen en memoria hasta completar el backward.
+
+Las consecuencias son directas: el modelo híbrido de 150M consume aproximadamente 15.5 GB de VRAM durante el entrenamiento, mientras que el transformer del mismo tamaño ocupa entre 6 y 8 GB gracias a su gradient checkpointing funcional. Para el modelo de 350M, el consumo alcanza aproximadamente 27 GB.
+
+\subsection{Estrategias de mitigación}
+
+Para compensar la ausencia de gradient checkpointing, se implementaron varias técnicas:
+
+\begin{itemize}
+\item \textbf{Precisión mixta bf16}: las activaciones y los gradientes se almacenan en bf16 (2 bytes por elemento), reduciendo el consumo a la mitad en comparación con FP32. Los pesos completos se mantienen en FP32 para preservar la precisión de las actualizaciones; tras la cuantización ternaria, los pesos efectivos son $\{-1/\alpha, 0, +1/\alpha\}$, pero la variable \texttt{weight} subyacente permanece en FP32 para el optimizador.
+\item \textbf{Reglas de weight decay}: el optimizador AdamW no almacena momentos (estados de primer y segundo orden) para ciertos parámetros, reduciendo el consumo de memoria del optimizador. Los parámetros excluidos del weight decay son: sesgos, parámetros de normalización (RMSNorm), proyecciones de acolchonamiento de dimensión (\texttt{pad\_dimension}), tablas de \textit{embeddings} y cualquier parámetro con dimensionalidad $< 2$ (como escalares). Para estos, los momentos de AdamW se almacenan pero el decaimiento de peso no se aplica.
+\item \textbf{Liberación manual de buffers}: después de completar el procesamiento de cada etapa (chunking, dechunking), se eliminan explícitamente los tensores intermedios mediante \texttt{del}, seguido de \texttt{torch.cuda.empty\_cache()} en puntos estratégicos del código. Esto permite que el asignador de memoria de CUDA reutilice los bloques liberados para las operaciones siguientes.
+\item \textbf{Descomposición de lotes}: cuando la memoria es insuficiente para el tamaño de lote deseado, se reduce \texttt{batch\_size} y se aumenta \texttt{gradient\_accumulation\_steps} proporcionalmente para mantener el mismo tamaño de lote efectivo. Por ejemplo, si el lote efectivo es 32 con $4 \times 8$ (batch\_size=4, acumulación=8), se puede reconfigurar a $2 \times 16$.
+\end{itemize}
+
+\subsection{Consumo de memoria del optimizador}
+
+El optimizador AdamW almacena dos momentos por parámetro en FP32, lo que representa 8 bytes por parámetro (2 $\times$ 4 bytes). Para un modelo de 150M parámetros, solo los momentos del optimizador ocupan aproximadamente 1.1 GB adicionales a los 0.55 GB de los pesos en FP32. Este costo es independiente de la cuantización ternaria, ya que los momentos se mantienen sobre los pesos completos.
+
+\section{Sistema de caché para generación}
+
+Durante la inferencia autorregresiva, el modelo utiliza una estructura de caché jerárquica que evita la recomputación de estados recurrentes en cada paso (ver Sección~\ref{sec:cache} del Capítulo~4 para la descripción arquitectónica de \texttt{HNetBitCache} y el modo paso a paso).
+
+\subsection{HGRNBlockCache}
+
+Cada bloque HGRN almacena su estado recurrente en una tupla dentro de \texttt{HGRNBlockCache}. Según la convolución corta, la tupla contiene:
+
+\begin{itemize}
+\item Sin convolución: \texttt{(recurrent\_state,)} — tensor $(B, H, D_{\text{head}})$.
+\item Con convolución compartida: \texttt{(conv\_state, recurrent\_state)} — donde \texttt{conv\_state} es $(B, d_{\text{model}}, \text{kernel\_size})$.
+\item Con convolución separada: \texttt{(conv\_state\_i, conv\_state\_f, recurrent\_state)} — tres estados de convolución independientes.
+\end{itemize}
+
+La caché soporta actualización in-place cuando las dimensiones coinciden (evitando realocaciones) y reemplazo cuando cambia el tamaño del lote.
+
+\subsection{Manejo de continuidad de batch en step mode}
+
+Durante la generación paso a paso, el módulo de chunking selecciona solo los elementos del lote que constituyen límites de fragmento para procesamiento por la etapa interna. Esto rompe la continuidad del lote: si en un paso dado solo 3 de 8 elementos son límites, la etapa interna debe procesar un lote de tamaño 3.
+
+Para manejar esto, los métodos \texttt{\_slice\_hnet\_cache} y \texttt{\_merge\_hnet\_cache} en \texttt{HNetBit} recorren recursivamente todos los niveles de la caché, indexando los estados de cada capa mediante la máscara de límites:
+
+\begin{verbatim}
+def _slice_hgrn_cache(cache, mask):
+    sub = HGRNBlockCache()
+    for state in cache.states:
+        if state is not None:
+            sub.states.append(tuple(s[mask] for s in state))
+        else:
+            sub.states.append(None)
+    return sub
+
+def _merge_hgrn_cache(cache, mask, sub):
+    for i, state in enumerate(cache.states):
+        if state is not None:
+            cache.states[i] = tuple(
+                torch.where(mask.unsqueeze(-1), s, orig_s)
+                for s, orig_s in zip(sub.states[i], state)
+            )
+\end{verbatim}
+
+Este proceso se aplica recursivamente a las cachés de todas las etapas, garantizando que los estados de los elementos no-límite se preserven sin modificación.
+
+\subsection{Soporte para búsqueda de haz}
+
+Cuando se utiliza búsqueda de haz (\textit{beam search}), la caché debe reordenarse para alinearse con las nuevas hipótesis. El método \texttt{reorder\_cache(beam\_idx)} recorre recursivamente la jerarquía de \texttt{HNetBitCache} y aplica \texttt{torch.index\_select(beam\_idx)} a todos los tensores de estado dependientes del lote: estados recurrentes de \texttt{HGRNBlockCache}, estados de enrutamiento y estados de dechunking.
+
+\section{Exportación para despliegue}
+\label{sec:exportacion}
+
+Una vez entrenado, el modelo puede exportarse a un formato compacto que elimina los metadatos de entrenamiento y empaqueta los pesos ternarios a 2 bits por parámetro.
+
+\subsection{Proceso de exportación}
+
+La función \texttt{export\_model()} en \texttt{export\_deployment.py} sigue el siguiente flujo:
+
+\begin{enumerate}
+\item \textbf{Rebuild}: se reconstruye el modelo desde cero utilizando los parámetros de configuración almacenados en el checkpoint (\texttt{model\_name} y \texttt{model\_size}).
+\item \textbf{Carga}: se cargan los pesos desde el \texttt{model\_state\_dict} del checkpoint.
+\item \textbf{Congelación ternaria}: se itera sobre todos los módulos \texttt{BitLinear} y \texttt{FusedBitLinear} del modelo. Para cada uno, se aplica \texttt{weight\_quant()} de forma determinista y se reemplaza el tensor de pesos en el lugar, sin STE:
+  \begin{equation}
+  \tilde{W} = \frac{\text{round\_clamp}(W \cdot \alpha, -1, 1)}{\alpha}.
+  \end{equation}
+  Después de este paso, los pesos son permanentemente ternarios y el modelo no puede seguir entrenándose.
+\item \textbf{Verificación roundtrip}: se desempaquetan y recargan los pesos, se ejecuta un paso forward con una entrada sintética y se verifica que la diferencia máxima en logits sea menor a $1 \times 10^{-5}$.
+\item \textbf{Empaquetado}: los pesos ternarios se empaquetan mediante \texttt{pack\_ternary\_tensor()}: se extrae la escala $\alpha$, se codifican los tres valores $\{-1, 0, +1\}$ como $\{0, 1, 2\}$, se empaquetan 4 valores por byte en un arreglo \texttt{uint8} (2 bits por parámetro), y se almacena la escala como \texttt{float32}.
+\item \textbf{Guardado en dos pasadas}: primero se guarda el archivo para medir su tamaño exacto, luego se guarda de nuevo con las estadísticas de compresión incrustadas en el nombre del archivo.
+\end{enumerate}
+
+\subsection{Ratios de compresión}
+
+El empaquetado ternario reduce significativamente el tamaño en disco. Para un modelo con $P$ parámetros ternarios, el tamaño del archivo exportado es aproximadamente:
+
+\begin{equation}
+\text{Tamaño}_{\text{deploy}} \approx \frac{2P}{8} + \frac{P}{K} + \text{overhead},
+\end{equation}
+
+donde $P$ es el número de parámetros ternarios, 2 bits por parámetro para los valores, $K$ es la frecuencia de escalas (una por tensor) y el overhead incluye los pesos no ternarios (embeddings, normalización) almacenados en FP32. La compresión frente a FP16 es:
+
+\begin{equation}
+\text{Compresión} = \frac{16P}{\text{Tamaño}_{\text{deploy}} \cdot 8} \approx 7{-}8\times.
+\end{equation}
+
+Para el modelo híbrido de 150M, el archivo de despliegue ocupa aproximadamente 37.9 MB (2.29 bits/parámetro), frente a los 263.9 MB que ocuparían los pesos en FP16.
+
+\section{Integración con Hugging Face}
+
+\texttt{HNetBitForCausalLM} hereda de \texttt{PreTrainedModel} y \texttt{GenerationMixin}, permitiendo usar utilidades estándar de Hugging Face como \texttt{model.generate()} y \texttt{pipeline}.
+
+\subsection{Manejo de caché en generación}
+
+El método \texttt{\_prepare\_cache\_for\_generation()} sobrescribe el comportamiento por defecto de Hugging Face, que utiliza \texttt{DynamicCache} (basado en pares KV). En su lugar, crea una instancia de \texttt{HNetBitCache} mediante \texttt{backbone.allocate\_inference\_cache()}, que construye recursivamente la estructura jerárquica de caché con estados inicializados a cero.
+
+El método \texttt{prepare\_inputs\_for\_generation()} detecta la presencia de \texttt{HNetBitCache} y, si la caché ya ha procesado tokens anteriores, recorta \texttt{input\_ids} al último token solamente. Esto evita reprocesar toda la secuencia en cada paso de generación.
+
+\subsection{Manejo de tamaño de lote variable}
+
+Durante la fase de prefill de Hugging Face, el tamaño de lote puede variar entre llamadas (por ejemplo, cuando el pipeline cambia de configuración). El forward de \texttt{HNetBitForCausalLM} detecta esta situación comparando las dimensiones de la caché existente con el lote actual, y reasigna una nueva caché si es necesario.
+
+\subsection{Compatibilidad con beam search}
+
+La caché implementa \texttt{reorder\_cache(beam\_idx)}, llamado por \texttt{GenerationMixin} durante la búsqueda de haz. Recorre recursivamente la jerarquía aplicando \texttt{index\_select} a los tensores de estado, manteniendo las hipótesis alineadas.

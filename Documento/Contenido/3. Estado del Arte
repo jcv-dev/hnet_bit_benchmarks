@@ -1,5 +1,8 @@
-\section{Estado del Arte}
-\subsection{Modelado de Lenguaje Escalable Libre de Multiplicación de Matrices}
+\chapter{Estado del Arte}
+
+A continuación se presentan los trabajos más relevantes que constituyen el estado del arte en las dos líneas de investigación que confluyen en este trabajo: arquitecturas libres de multiplicaciones de matrices con cuantización ternaria y modelos de lenguaje que operan directamente sobre bytes sin tokenización. Se describen cinco propuestas fundamentales que abordan estos paradigmas desde distintas perspectivas.
+
+\section{Modelado de Lenguaje Escalable Libre de Multiplicación de Matrices}
 
 \textcite{Zhu2024} proponen una arquitectura innovadora para Modelos de Lenguaje (LM) que elimina completamente las operaciones de multiplicación de matrices (MatMul), creando lo que se conoce como MatMul-Free LM. Este enfoque surge como respuesta al creciente costo computacional que representa la multiplicación de matrices en modelos que escalan hacia miles de millones de parámetros, a pesar de estar altamente optimizada para GPUs.
 
@@ -35,7 +38,7 @@ En la implementación para Loihi 2, el modelo se cuantiza a pesos de 8 bits y ac
 
 En conclusión, el MatMul-Free LM representa un avance significativo hacia modelos de lenguaje eficientes y escalables. Al reemplazar MatMul con operaciones ternarias y productos elemento a elemento, el modelo logra un rendimiento sólido con costos computacionales y energéticos dramáticamente reducidos. Su inherente compatibilidad con hardware neuromórfico subraya aún más su potencial para los futuros sistemas de IA de baja potencia. El código está disponible en: https://github.com/ridgerchu/matmulfreellm.
 
-\subsection{Chunking Dinámico para Modelado Jerárquico de Secuencias de Extremo a Extremo}
+\section{Chunking Dinámico para Modelado Jerárquico de Secuencias de Extremo a Extremo}
 
 \textcite{Hwang2025} proponen H-Net, una arquitectura jerárquica que incorpora un mecanismo de chunking dinámico (DC) para aprender estrategias de segmentación dependientes del contenido y contexto de forma conjunta con el resto del modelo, eliminando así la necesidad de tokenización. El Dynamic Chunking permite que el modelo procese datos brutos, como bytes, aprendiendo automáticamente cómo agruparlos en segmentos significativos sin depender de métodos predefinidos. Este enfoque aborda limitaciones fundamentales en los modelos de lenguaje modernos, donde la tokenización convencional introduce problemas como pobre comprensión a nivel de carácter, falta de adaptabilidad a diferentes lenguajes y modalidades, y sesgos inherentes. Aunque arquitecturas como el Transformer han avanzado hacia el aprendizaje de extremo a extremo, la tokenización sigue siendo un componente artesanal que impide la modelización eficiente de secuencias sin preprocesamiento.
 
@@ -52,7 +55,7 @@ La Figura \ref{fig:hnet-overview} presenta un resumen arquitectónico de H-Net c
 
 Para mejorar la propagación de señales y la estabilidad del entrenamiento en arquitecturas jerárquicas, se introducen varias técnicas clave. El balance de normalización utiliza RMSNorm al final de cada componente de la red para equilibrar las magnitudes de las características entre las etapas jerárquicas y evitar que las señales residuales sean dominadas por las salidas de las redes más profundas. Además, la modulación de la tasa de aprendizaje asigna tasas más altas a las etapas externas, que procesan secuencias más largas, en comparación con las etapas internas, asegurando un entrenamiento equilibrado en toda la jerarquía. Los codificadores y decodificadores se implementan preferentemente con capas Mamba-2 (State Space Models), aprovechando su fuerte sesgo inductivo para la compresión y su eficiencia en el procesamiento de secuencias de grano fino.
 
-La Figura \ref{fig:hnet-validation-bits} muestra la evolución del bits por byte (BPB) de validación durante el entrenamiento para modelos a escalas Large (760M parámetros) y XL (1.3B parámetros), todos equiparados en FLOPs y datos. Las curvas comparan H-Net de 1 y 2 etapas con líneas de base como el Transformer tokenizado con BPE, MambaByte, LlamaByte, SpaceByte, y variantes de H-Net con chunking estático o heurístico. En la escala Large, se observa que H-Net (2-stage) achieve el menor BPB, superando a todos los demás modelos, y en la escala XL, H-Net (2-stage) cruza por debajo del Transformer después de solo 30B bytes de entrenamiento, demostrando una escalabilidad superior con los datos. Las líneas punteadas indican los puntos de cruce donde H-Net supera al Transformer, resaltando la ventaja del chunking dinámico aprendido end-to-end.
+La Figura \ref{fig:hnet-validation-bits} muestra la evolución del bits por byte (BPB) de validación durante el entrenamiento para modelos a escalas Large (760M parámetros) y XL (1.3B parámetros), todos equiparados en FLOPs y datos. Las curvas comparan H-Net de 1 y 2 etapas con líneas de base como el Transformer tokenizado con BPE, MambaByte, LlamaByte, SpaceByte, y variantes de H-Net con chunking estático o heurístico. En la escala Large, se observa que H-Net (2-stage) logra el menor BPB, superando a todos los demás modelos, y en la escala XL, H-Net (2-stage) cruza por debajo del Transformer después de solo 30B bytes de entrenamiento, demostrando una escalabilidad superior con los datos. Las líneas punteadas indican los puntos de cruce donde H-Net supera al Transformer, resaltando la ventaja del chunking dinámico aprendido end-to-end.
 
 \begin{figure}[H]
     \centering
@@ -61,9 +64,9 @@ La Figura \ref{fig:hnet-validation-bits} muestra la evolución del bits por byte
     \label{fig:hnet-validation-bits}
 \end{figure}
 
-H-Net representa un avance significativo hacia modelos de lenguaje verdaderamente de extremo a extremo, eliminando la dependencia de la tokenización mediante un mecanismo de chunking dinámico que aprende a segmentar datos brutos de forma adaptativa. Al aprender jerarquías de abstracción de forma recursiva, H-Net no solo iguala sino que supera el rendimiento de los pipelines tokenizados, especialmente a medida que escala en datos y parámetros. Su robustez, interpretabilidad y versatilidad across diferentes lenguajes y modalidades lo posicionan como una arquitectura fundamental prometedora para la próxima generación de modelos de fundación que aprenden más con menos preprocesamiento.
+H-Net representa un avance significativo hacia modelos de lenguaje verdaderamente de extremo a extremo, eliminando la dependencia de la tokenización mediante un mecanismo de chunking dinámico que aprende a segmentar datos brutos de forma adaptativa. Al aprender jerarquías de abstracción de forma recursiva, H-Net no solo iguala sino que supera el rendimiento de los pipelines tokenizados, especialmente a medida que escala en datos y parámetros. Su robustez, interpretabilidad y versatilidad en diferentes lenguajes y modalidades lo posicionan como una arquitectura fundamental prometedora para la próxima generación de modelos de fundación que aprenden más con menos preprocesamiento.
 
-\subsection{La Era de los LLMs de 1 bit: Todos los Modelos de Lenguaje de Gran Tamaño son de 1.58 Bits}
+\section{La Era de los LLMs de 1 bit: Todos los Modelos de Lenguaje de Gran Tamaño son de 1.58 Bits}
 
 \textcite{Ma2024} proponen BitNet b1.58, un modelo de lenguaje grande donde cada parámetro es ternario, tomando valores en ${-1, 0, +1}$, lo que equivale a 1.58 bits por peso. La motivación surge de la necesidad de reducir el costo computacional, de memoria y energético de los LLM tradicionales en precisión completa, como FP16 o BF16, sin sacrificar su rendimiento. A diferencia de la cuantización posterior al entrenamiento, BitNet b1.58 se entrena desde cero con esta representación de baja precisión, lo que define un nuevo paradigma de computación basado en operaciones enteras en lugar de operaciones de punto flotante.
 
@@ -95,7 +98,7 @@ En la discusión y trabajo futuro, los autores identifican varias direcciones pr
 
 En conclusión, BitNet b1.58 representa un avance significativo hacia LLMs más sostenibles y escalables. Al redefinir el paradigma de computación desde operaciones en punto flotante hacia operaciones enteras de 1.58 bits, no solo se iguala el rendimiento de los modelos en precisión completa, sino que se logran mejoras sustanciales en eficiencia. Esto sienta las bases para una nueva generación de modelos de lenguaje más accesibles y aplicables en entornos con restricciones de recursos.
 
-\subsection{SpaceByte: Hacia la Eliminación de la Tokenización en el Modelado de Lenguaje de Gran Tamaño}
+\section{SpaceByte: Hacia la Eliminación de la Tokenización en el Modelado de Lenguaje de Gran Tamaño}
 
 \textcite{Slagle2024} propone SpaceByte, una nueva arquitectura byte-level que cierra la brecha de rendimiento entre los modelos basados en bytes y los basados en subpalabras, argumentando que la tokenización, aunque ampliamente utilizada en Modelos de Lenguaje a Gran Escala (LLMs), introduce importantes desventajas como sesgos de rendimiento, vulnerabilidad adversarial, menor rendimiento en modelado a nivel de carácter y complejidad adicional.
 
@@ -129,7 +132,7 @@ Como trabajo futuro, los autores sugieren extender el modelado multiescala a niv
 
 En conclusión, SpaceByte representa un avance significativo hacia la eliminación de la tokenización en LLMs. Al introducir un modelado multiescala dinámico que alinea el procesamiento global con los límites lingüísticos naturales, logra un rendimiento competitivo con los modelos tokenizados, al tiempo que evita sus desventajas inherentes. Esto sienta las bases para LLMs más robustos, eficientes y menos sesgados en el futuro.
 
-\subsection{MEGABYTE: Prediciendo Secuencias de Millones de Bytes con Transformers Multiescala}
+\section{MEGABYTE: Prediciendo Secuencias de Millones de Bytes con Transformers Multiescala}
 
 \textcite{Yu2023} proponen MegaByte, una arquitectura de decodificador multiescala que permite el modelado diferenciable de secuencias de más de un millón de bytes. MegaByte divide las secuencias en parches y utiliza un modelo local dentro de cada parche y un modelo global entre parches. Esto permite autoatención subcuadrática, capas feedforward más grandes para el mismo coste computacional y un mayor paralelismo durante la generación. Una ventaja clave de MegaByte es que opera a nivel de bytes, eliminando la necesidad de tokenización, lo que simplifica el preprocesamiento y evita problemas de generalización a nuevos dominios o modos.
 

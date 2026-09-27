@@ -1,0 +1,214 @@
+\documentclass[tikz,border=8pt]{standalone}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage[utf8x]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+
+\usetikzlibrary{babel,positioning,shapes.geometric,arrows.meta,decorations.pathreplacing,backgrounds,fit,calc}
+
+\begin{document}
+\begin{tikzpicture}[
+    % === Colours ===
+    chunkA/.style={fill=blue!20,  draw=blue!60,  thick},
+    chunkB/.style={fill=red!20,   draw=red!60,   thick},
+    chunkC/.style={fill=green!20, draw=green!60, thick},
+    chunkD/.style={fill=orange!20,draw=orange!60,thick},
+    % === Blocks ===
+    stageblock/.style={draw, rounded corners, fill=gray!5, minimum width=2.4cm, minimum height=1.0cm, font=\footnotesize\sffamily, align=center},
+    opblock/.style={draw, rounded corners, fill=yellow!10, minimum width=2.2cm, minimum height=0.9cm, font=\footnotesize\sffamily, align=center},
+    arrow/.style={->, >=stealth, thick, gray},
+    resarrow/.style={->, >=stealth, thick, gray, dashed},
+    dimlabel/.style={font=\scriptsize\sffamily, text=gray},
+    boundarycell/.style={draw=red!60, thick, fill=red!8, minimum width=0.14cm, minimum height=0.28cm, inner sep=0},
+    plaincell/.style={draw=gray!25, thin, fill=gray!3, minimum width=0.14cm, minimum height=0.28cm, inner sep=0},
+    tokencell/.style={draw, minimum width=0.14cm, minimum height=0.28cm, inner sep=0},
+    chunkcell/.style={draw, minimum width=0.35cm, minimum height=0.35cm, inner sep=0},
+]
+
+% ======================================================================
+%  INPUT — byte sequence (top-left area)
+% ======================================================================
+\node[font=\small\sffamily\bfseries,text=blue!60!black] (inlabel) at (0,1.6) {4096 bytes};
+
+% Row of 20 representative bytes + boundary markers
+\foreach \i/\c in {0/chunkA, 1/chunkA, 2/chunkA, 3/chunkA,
+                   4/chunkB, 5/chunkB, 6/chunkB,
+                   7/chunkC, 8/chunkC, 9/chunkC, 10/chunkC, 11/chunkC,
+                   12/chunkD, 13/chunkD, 14/chunkD, 15/chunkD}
+{
+    \node[tokencell,\c] (b\i) at (\i*0.20+0.5, 0.6) {};
+}
+\node[font=\tiny] at (4.0,0.6) {$\cdots$};
+\node[font=\tiny] at (0.0,0.6) {$\cdots$};
+
+% Boundary markers above bytes
+\foreach \i in {0,4,7,12}
+    \node[boundarycell] (p\i) at (\i*0.20+0.5, 1.05) {};
+\foreach \i in {1,2,3,5,6,8,9,10,11,13,14,15}
+    \node[plaincell] (p\i) at (\i*0.20+0.5, 1.05) {};
+
+\node[font=\tiny\sffamily,text=red!60] at (0.5,1.35) {l\'im};
+\node[font=\tiny\sffamily,text=red!60] at (1.3,1.35) {l\'im};
+\node[font=\tiny\sffamily,text=red!60] at (1.9,1.35) {l\'im};
+\node[font=\tiny\sffamily,text=red!60] at (2.9,1.35) {l\'im};
+
+% ======================================================================
+%  STAGE 0 ENCODER
+% ======================================================================
+\node[stageblock] (s0enc) at (0.5,-0.4) {Encoder\\Stage~0\\$N_{\!enc}$ bloques\\$d_0$};
+\draw[arrow] (0.5,0.3) -- (s0enc);
+
+% ======================================================================
+%  STAGE 0 ROUTING
+% ======================================================================
+\node[opblock] (s0route) at (3.0,-0.4) {Routing\\ModuleBit\\coseno $q$-$k$\\$\mathbf{p}_t$};
+\draw[arrow] (s0enc) -- (s0route);
+
+% Show p_t values
+\foreach \i/\pval in {0/1.0, 1/0.1, 2/0.05, 3/0.02, 4/0.95, 5/0.08, 6/0.03, 7/0.9, 12/0.85}
+    \node[font=\tiny\sffamily,text=red!70] at (\i*0.20+0.5, 0.9) {\pval};
+
+% ======================================================================
+%  STAGE 0 CHUNK
+% ======================================================================
+\node[opblock] (s0chunk) at (5.5,-0.4) {ChunkLayer\\argsort\\$\approx 819$ chunks\\$d_0$};
+\draw[arrow] (s0route) -- (s0chunk);
+
+% ======================================================================
+%  STAGE 1 ENCODER  (compressed input)
+% ======================================================================
+\node[stageblock] (s1enc) at (8.0,-0.4) {Encoder\\Stage~1\\$M_{\!enc}$ bloques\\$d_1$};
+\draw[arrow] (s0chunk) -- (s1enc);
+
+% Show compressed chunks (4 chunks)
+\foreach \i/\c in {0/chunkA, 1/chunkB, 2/chunkC, 3/chunkD}
+    \node[chunkcell,\c] (c\i) at (\i*0.55+6.5, 1.0) {};
+\node[font=\tiny] at (8.0,1.3) {$\approx 819$};
+
+% ======================================================================
+%  STAGE 1 ROUTING
+% ======================================================================
+\node[opblock] (s1route) at (10.4,-0.4) {Routing\\ModuleBit\\coseno $q$-$k$};
+\draw[arrow] (s1enc) -- (s1route);
+
+% ======================================================================
+%  STAGE 1 CHUNK
+% ======================================================================
+\node[opblock] (s1chunk) at (12.8,-0.4) {ChunkLayer\\$\approx 163$ chunks\\$d_1$};
+\draw[arrow] (s1route) -- (s1chunk);
+
+% ======================================================================
+%  INNERMOST
+% ======================================================================
+\node[stageblock,fill=green!5] (inner) at (15.4,-0.4) {Etapa interna\\HGRNBitStack\\$K$ bloques\\$d_2$};
+\draw[arrow] (s1chunk) -- (inner);
+
+% Show further compressed
+\foreach \i/\c in {0/chunkA, 1/chunkB, 2/chunkC, 3/chunkD}
+    \node[chunkcell,\c,minimum width=0.55cm,minimum height=0.55cm] (d\i) at (\i*0.80+14.2, 1.2) {};
+\node[font=\tiny] at (15.4,1.6) {$\approx 163$};
+
+% ======================================================================
+%  DECHUNK STAGE 1
+% ======================================================================
+\node[opblock] (s1dechunk) at (12.8,-2.2) {DeChunkLayer\\EMA\\$M$ posiciones};
+\draw[arrow] (15.4,-1.2) -- (15.4,-1.6) -- (s1dechunk);
+
+% ======================================================================
+%  DECODER STAGE 1
+% ======================================================================
+\node[stageblock] (s1dec) at (10.4,-2.2) {Decoder\\Stage~1\\$M_{\!dec}$ bloques\\$d_1 \to$ recorte $d_0$};
+\draw[arrow] (s1dechunk) -- (s1dec);
+
+% ======================================================================
+%  DECHUNK STAGE 0
+% ======================================================================
+\node[opblock] (s0dechunk) at (8.0,-2.2) {DeChunkLayer\\EMA\\$L$ posiciones};
+\draw[arrow] (s1dec) -- (s0dechunk);
+
+% ======================================================================
+%  DECODER STAGE 0
+% ======================================================================
+\node[stageblock] (s0dec) at (5.5,-2.2) {Decoder\\Stage~0\\$N_{\!dec}$ bloques\\$d_0$};
+\draw[arrow] (s0dechunk) -- (s0dec);
+
+% ======================================================================
+%  LM HEAD
+% ======================================================================
+\node[stageblock,fill=yellow!15] (lmhead) at (3.0,-2.2) {\texttt{BitLinear\_LM}\\$d_0 \!\to\! 256$ logits};
+\draw[arrow] (s0dec) -- (lmhead);
+
+% Output label
+\node[font=\small\sffamily\bfseries,text=blue!60!black] (outlabel) at (0.5,-2.2) {Predicci\'on\\siguiente\\byte};
+
+\draw[arrow] (lmhead) -- (outlabel);
+
+% ======================================================================
+%  RESIDUAL CONNECTIONS (dashed, below the main flow or as vertical skips)
+% ======================================================================
+
+% Stage 0 residual: from s0enc output → before s0dec
+\node[font=\tiny\sffamily,text=gray,rotate=90] at (5.5,-1.0) {$\mathbf{R}$ FP32 init=0};
+\draw[resarrow] (5.5,-0.9) -- (5.5,-1.8) node [midway,right,font=\tiny\sffamily,text=gray] {};
+
+% Stage 1 residual: from s1enc output → before s1dec  
+\node[font=\tiny\sffamily,text=gray,rotate=90] at (10.4,-1.0) {$\mathbf{R}$ FP32 init=0};
+\draw[resarrow] (10.4,-0.9) -- (10.4,-1.8);
+
+% STE(p) annotation
+\node[font=\tiny\sffamily,text=gray] at (11.0,-1.6) {$+\text{STE}(p)$};
+\node[font=\tiny\sffamily,text=gray] at (6.1,-1.6) {$+\text{STE}(p)$};
+
+% ======================================================================
+%  LOAD-BALANCING LOSS (bottom)
+% ======================================================================
+\node[draw, rounded corners, fill=red!6, font=\footnotesize\sffamily, align=center, inner sep=6pt] (lb) at (8.0,-3.5) {$\mathcal{L}_\text{total} = \mathcal{L}_\text{CE} + \lambda_\text{LB}\!\sum_s\!\mathcal{L}^{(s)}_\text{LB}$\\\footnotesize (solo entrenamiento)};
+\draw[arrow,dashed,gray] (s0route.south) .. controls +(0,-0.3) and +(2.5,0.6) .. (lb.north west);
+\draw[arrow,dashed,gray] (s1route.south) .. controls +(0,-0.3) and +(1.2,0.6) .. (lb.north);
+
+% ======================================================================
+%  LEGEND (top right)
+% ======================================================================
+\node[draw,rounded corners,fill=white,font=\tiny\sffamily,align=left,inner sep=4pt] at (15.4,3.2) {
+    \textbf{Leyenda}\\[2pt]
+    \tikz\fill[chunkA] (0,0) rectangle (0.3,0.2); \; Fragmento A\\
+    \tikz\fill[chunkB] (0,0) rectangle (0.3,0.2); \; Fragmento B\\
+    \tikz\fill[chunkC] (0,0) rectangle (0.3,0.2); \; Fragmento C\\
+    \tikz\fill[chunkD] (0,0) rectangle (0.3,0.2); \; Fragmento D\\[2pt]
+    \tikz\draw[boundarycell] (0,0) rectangle (0.25,0.3); \; L\'imite\\
+    \tikz\draw[plaincell] (0,0) rectangle (0.25,0.3); \; No l\'imite\\[2pt]
+    \textcolor{gray}{-{}-{}-} \; Residual FP32
+};
+
+% ======================================================================
+%  CONCEPTUAL LABELS above the flow
+% ======================================================================
+\node[font=\footnotesize\sffamily,text=blue!60!black]  at (0.5, 2.3) {\textbf{Bytes}};
+\node[font=\footnotesize\sffamily,text=red!60!black]   at (6.8, 2.3) {\textbf{Caracteres / s\'ilabas}};
+\node[font=\footnotesize\sffamily,text=green!60!black] at (12.8,2.3) {\textbf{Palabras / frases}};
+
+% Arrows under labels
+\draw[->,>=stealth,blue!40,thick]  (0.1,2.0) -- (2.8,2.0);
+\draw[->,>=stealth,red!40,thick]   (3.7,2.0) -- (10.0,2.0);
+\draw[->,>=stealth,green!40,thick] (10.8,2.0) -- (16.5,2.0);
+
+% ======================================================================
+%  STAGE BRACKETS (bottom)
+% ======================================================================
+\draw [decorate,decoration={brace,amplitude=8pt},thick,blue!50]
+    (-0.1,-1.2) -- (6.8,-1.2)
+    node [midway,yshift=-0.5cm,font=\footnotesize\sffamily,text=blue!60!black,align=center]
+    {Stage 0 \quad $\times 5$ compresi\'on};
+
+\draw [decorate,decoration={brace,amplitude=8pt},thick,red!50]
+    (7.2,-1.2) -- (13.5,-1.2)
+    node [midway,yshift=-0.5cm,font=\footnotesize\sffamily,text=red!60!black,align=center]
+    {Stage 1 \quad $\times 5$ compresi\'on};
+
+\draw [decorate,decoration={brace,amplitude=8pt},thick,green!50]
+    (13.9,-1.2) -- (16.5,-1.2)
+    node [midway,yshift=-0.5cm,font=\footnotesize\sffamily,text=green!60!black,align=center]
+    {Interna};
+
+\end{tikzpicture}
+\end{document}

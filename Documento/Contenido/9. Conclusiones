@@ -1,0 +1,37 @@
+\chapter{Conclusiones}
+
+Este capítulo cierra el documento respondiendo la pregunta de investigación, evaluando la hipótesis planteada y sintetizando las contribuciones del trabajo.
+
+\section{Respuesta a la pregunta de investigación}
+
+La pregunta que guió el trabajo fue cómo diseñar e implementar una arquitectura de modelo de lenguaje que, integrando mecanismos MatMul-Free y chunking dinámico, logre un rendimiento competitivo con un costo computacional reducido y capacidad de procesar secuencias sin tokenización. La respuesta, sustentada en seis ejecuciones de entrenamiento a 25\,000 millones de bytes en español, es que ambas ideas son viables, pero con matices distintos:
+
+\begin{itemize}
+    \item \textbf{La eliminación de MatMul es gratuita en calidad.} El MatMul-Free plano, con pesos ternarios $\{-1,0,+1\}$ y recurrencia HGRN, obtuvo el mejor BPB de todas las arquitecturas (1.474 a 150M y 1.370 a 350M), superando al Transformer de referencia (1.484 y 1.386). Lo logró con un despliegue de 28.4 MB (7.6$\times$ menor que el FP16 equivalente), un pico de memoria de entrenamiento de 3.4 GB y una memoria de inferencia 2.9$\times$ menor.
+    \item \textbf{El chunking dinámico aprende una segmentación jerárquica plausible} HNetBit aprendió, de forma end-to-end y sin tokenizador, a agrupar bytes en fragmentos de $\sim$3.2 bytes y estos en unidades de $\sim$15 bytes, cercanas a palabras en español, con una compresión de secuencia de $\sim$15$\times$ a 350M (la etapa más interna procesa el $\sim$6.6\,\% de los tokens en promedio). Sin embargo, su BPB quedó 9.3\,\% (150M) y 3.7\,\% (350M) por encima del Transformer. La brecha decreciente y la mayor pendiente de mejora del híbrido en la fase final del entrenamiento sugieren que la ventaja del enfoque jerárquico aparecería a escalas mayores, en línea con la literatura de H-Net.
+\end{itemize}
+
+\section{Evaluación de la hipótesis}
+
+La hipótesis central sostenía que la combinación de una arquitectura libre de MatMul con cuantización a 1.58 bits y un mecanismo de segmentación dinámica permitiría construir modelos más eficientes sin sacrificar calidad. La evidencia la confirma parcialmente:
+
+\begin{itemize}
+    \item \textbf{Confirmada en eficiencia:} los modelos ternarios reducen el tamaño de despliegue en 7--7.6$\times$ frente a FP16, la memoria de inferencia en 1.9--2.9$\times$, y el pico de memoria de entrenamiento hasta 3.4 GB. La ventaja en huella de memoria y almacenamiento es robusta, medible y reproducible.
+    \item \textbf{Confirmada parcialmente en calidad:} la arquitectura MatMul-Free plana iguala o supera al Transformer sin costo alguno de calidad; la combinación con chunking jerárquico, en cambio, impone una penalización moderada que desaparecería a escalas más grandes.
+    \item \textbf{Confirmada en aprendizaje end-to-end:} la segmentación jerárquica emergió espontáneamente del entrenamiento sobre bytes crudos, validando el principio de que la tokenización no es indispensable para aprender representaciones multinivel.
+\end{itemize}
+
+\section{Contribuciones}
+
+Las contribuciones concretas del trabajo son las siguientes:
+
+\begin{enumerate}
+    \item \textbf{Una arquitectura nueva documentada en detalle:} HNetBit, que integra pesos ternarios, recurrencia HGRN y chunking dinámico multi-etapa, con su formulación matemática completa, sus kernels de cómputo, su caché de inferencia jerárquica y su variante con atención deslizante (Capítulos~\ref{cap:arquitectura} y \ref{cap:implementacion}).
+    \item \textbf{Un marco experimental modular y reproducible:} un sistema de entrenamiento unificado para las tres arquitecturas (además de la variante \texttt{hybrid\_attn} implementada pero no evaluada), con igualación estricta del presupuesto de datos entre tokenización BPE y byte-level, checkpointing, registro de métricas y exportación de despliegue compacto.
+    \item \textbf{Evidencia experimental en español:} los primeros resultados conocidos de arquitecturas MatMul-Free y de chunking dinámico entrenadas sobre un corpus de miles de millones de bytes en español, con métricas de calidad (BPB), eficiencia de despliegue, memoria de entrenamiento e inferencia, y costo de entrenamiento.
+    \item \textbf{Un análisis honesto de limitaciones:} ausencia de \textit{gradient checkpointing} en el híbrido, conteos de parámetros no emparejados, comparación por bytes y no por FLOPs, una sola semilla y un solo idioma, todas documentadas explícitamente para su consideración en trabajos futuros.
+\end{enumerate}
+
+\section{Síntesis final}
+
+El trabajo demuestra que es posible construir modelos de lenguaje eficientes en español que prescinden de la multiplicación de matrices sin penalización de calidad, y que el aprendizaje de segmentación jerárquica sin tokenizador es factible y produce estructuras lingüísticamente plausibles, aunque su rentabilidad en calidad requiere escalas mayores que las exploradas aquí. La combinación de ambas ideas ofrece hoy una alternativa atractiva para el despliegue de modelos compactos: un modelo de 150M parámetros que cabe en 28--38 MB, infiere con menos de 700 MB de memoria y predice el español con un BPB comparable al de un Transformer de referencia. Esa es la evidencia central de que la eficiencia extrema no exige abandonar la calidad, y de que los modelos que aprenden directamente de bytes son una dirección de investigación con fundamento experimental sólido.

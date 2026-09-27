@@ -1,6 +1,6 @@
-\section{Marco Referencial}
+\chapter{Marco Referencial}
 
-\subsection{Glosario}
+\section{Glosario}
 \begin{itemize}
     \item \textbf{Cuantización 1.58 bits:} esquema de representación paramétrica que utiliza valores ternarios (-1, 0, +1), logrando una entropía de 1.58 bits por peso mediante la fórmula $\log_2(3) \approx 1.58$, permitiendo sustituir multiplicaciones por operaciones de conteo \parencite{Ma2024}.
     
@@ -21,11 +21,11 @@
     \item \textbf{Tokenización:} proceso de división de texto en unidades discretas (tokens) mediante algoritmos como BPE \parencite{web1}, WordPiece \parencite{web2} o SentencePiece \parencite{web3}, introduciendo una capa de preprocesamiento no diferenciable que limita el aprendizaje end-to-end.
 \end{itemize}
 
-\subsection{Marco Teórico}
+\section{Marco Teórico}
 
 El desarrollo de este trabajo se fundamenta en tres pilares teóricos interconectados que proporcionan las bases formales para la arquitectura propuesta: los fundamentos de arquitecturas eficientes para LLMs, la teoría de procesamiento sin tokenización y los fundamentos de leyes de escalabilidad. A continuación se describe cada uno de ellos.
 
-\subsubsection{Fundamentos de Arquitecturas Eficientes de LLMs}
+\subsection{Fundamentos de Arquitecturas Eficientes de LLMs}
 
 Las arquitecturas eficientes de LLMs representan un campo de investigación dedicado a rediseñar los fundamentos computacionales de los modelos de lenguaje para superar las limitaciones de escalabilidad y consumo energético de la arquitectura Transformer convencional. La evolución teórica en este dominio ha transitado desde optimizaciones incrementales hasta reformulaciones radicales de las operaciones matemáticas subyacentes. El punto de partida lo establece la arquitectura Transformer original \parencite{vaswani2023attentionneed}, cuya dependencia de mecanismos de autoatención con complejidad cuadrática \(O(n^2 \cdot d)\) y operaciones intensivas de multiplicación de matrices constituye el principal cuello de botella para el escalado.
 
@@ -35,7 +35,7 @@ Paralelamente, la teoría de cuantización ternaria desarrollada en BitNet b1.58
 
 La confluencia de estos avances teóricos sugiere un cambio de paradigma hacia modelos basados en operaciones enteras y acumulaciones, donde la eficiencia computacional deja de ser una optimización secundaria para convertirse en un principio de diseño fundamental.
 
-\subsubsection{Teoría de Procesamiento sin Tokenización}
+\subsection{Teoría de Procesamiento sin Tokenización}
 
 El procesamiento sin tokenización constituye un paradigma teórico alternativo en el modelado de lenguaje que cuestiona la necesidad de métodos de segmentación predefinidos, argumentando que la representación óptima de secuencias debe emerger de patrones estadísticos inherentes a los datos más que de estructuras lingüísticas externas. La teoría se fundamenta en la crítica a la tokenización convencional (BPE, WordPiece, SentencePiece) como capa de preprocesamiento no diferenciable que introduce sesgos lingüísticos irreductibles y limita la aplicabilidad a dominios no textuales. Desde una perspectiva teórica, la tokenización viola el principio de aprendizaje extremo a extremo al introducir una discontinuidad no diferenciable en el pipeline de procesamiento.
 
@@ -43,9 +43,9 @@ La teoría del procesamiento sin tokenización postula que los modelos deben apr
 
 MEGABYTE \parencite{Yu2023} desarrolla la teoría de arquitecturas multiescala explícitas, donde un modelo global opera sobre parches de bytes mientras un modelo local procesa dependencias intra-parche. La reducción de complejidad a \(O(T^{4/3})\) para tamaño de parche \(P = T^{1/3}\) representa una contribución teórica significativa al problema del modelado de secuencias largas. H-Net \parencite{Hwang2025} avanza la teoría mediante Dynamic Chunking, donde un módulo de enrutamiento basado en similitud coseno aprende estrategias de segmentación end-to-end. Su arquitectura jerárquica tipo U-Net autoregresiva implementa formalmente el principio de compresión recursiva, permitiendo que diferentes niveles de abstracción (caracteres \(\rightarrow\) palabras \(\rightarrow\) frases) emerjan naturalmente del proceso de entrenamiento.
 
-Estos desarrollos teóricos comparten el principio fundamental de que la segmentación óptima es inherentemente contextual y debe ser aprendida rather than predefinida. Nuestro trabajo se fundamenta en estos principios para desarrollar un marco unificado que combine eficiencia computacional con flexibilidad estructural.
+Estos desarrollos teóricos comparten el principio fundamental de que la segmentación óptima es inherentemente contextual y debe ser aprendida en lugar de predefinida. Nuestro trabajo se fundamenta en estos principios para desarrollar un marco unificado que combine eficiencia computacional con flexibilidad estructural.
 
-\subsubsection{Fundamentos Matemáticos de Leyes de Escalabilidad}
+\subsection{Fundamentos Matemáticos de Leyes de Escalabilidad}
 
 Las leyes de escalabilidad en modelos de lenguaje constituyen un marco teórico-matemático que describe cuantitativamente cómo el rendimiento evoluciona en función de recursos computacionales, estableciendo principios predictivos fundamentales para el desarrollo eficiente de LLMs. La ley de Chinchilla \parencite{hoffmann2022} representa un hito teórico al establecer la relación óptima \(L(N, D) = \frac{A}{N^\alpha} + \frac{B}{D^\beta}\) entre parámetros (\(N\)), datos (\(D\)) y pérdida (\(L\)), donde \(A, B, \alpha, \beta\) son constantes empíricas. Trabajos fundacionales como \textcite{kaplan2020} demuestran que la pérdida escala como ley de potencias en \(N\) y \(D\), proporcionando las bases matemáticas para entender el comportamiento de escalado en arquitecturas convencionales.
 
@@ -53,7 +53,7 @@ La teoría de escalabilidad se extiende más allá de las relaciones empíricas 
 
 Para arquitecturas no convencionales, las leyes de escalabilidad requieren reformulaciones profundas. Los modelos MatMul-Free alteran las relaciones fundamentales al reemplazar operaciones \(O(n^2 \cdot d)\) con alternativas lineales \(O(n \cdot d)\), modificando la trayectoria de escalado óptimo. Similarmente, la cuantización ternaria introduce discontinuidades en las curvas de escalado al reducir drásticamente los requerimientos de memoria (\(\sim 3.5\times\) según \textcite{Ma2024}) y cambiar la naturaleza de las operaciones aritméticas de punto flotante a enteras. Los mecanismos de chunking dinámico añaden dimensiones adicionales al introducir longitud efectiva de secuencia y eficiencia de segmentación como variables en las ecuaciones de escalado.
 
-\subsubsection{Modelos de Lenguaje Pequeños (SLMs)}
+\subsection{Modelos de Lenguaje Pequeños (SLMs)}
 
 Los Modelos de Lenguaje Pequeños (SLMs) han emergido como una alternativa eficiente a los LLMs tradicionales, ofreciendo capacidades comparables con requerimientos computacionales significativamente reducidos. Estos modelos se caracterizan por su menor número de parámetros, mayor eficiencia en inferencia y facilidad de ajuste para dominios específicos.
 
